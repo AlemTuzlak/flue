@@ -1,4 +1,4 @@
-import type { ConversationRecord } from '../conversation-records.ts';
+import { flueRecordsOf } from '../conversation-records.ts';
 import { configureErrorRendering, InvalidRequestError } from '../errors.ts';
 import type {
 	Agent,
@@ -158,9 +158,12 @@ export async function readInstanceInfoFromStream(
 	if ((await store.getMeta(path)) === null) return null;
 	const read = await store.read(path, { offset: '-1', limit: 1 });
 	for (const batch of read.batches) {
-		for (const record of batch.records as ConversationRecord[]) {
+		for (const record of flueRecordsOf(batch.records)) {
 			if (record.type === 'conversation_created' && record.kind === 'root') {
-				return { id: instanceId, ...(record.uid !== undefined ? { uid: record.uid } : {}) };
+				return {
+					id: instanceId,
+					...(record.uid !== undefined ? { uid: record.uid } : {}),
+				};
 			}
 		}
 	}

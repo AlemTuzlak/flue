@@ -13,9 +13,9 @@
 	},
 	"dependencies": {
 		"@astrojs/mdx": "7.0.5",
-		"@earendil-works/pi-ai": "^0.87.1",
 		"@paper-design/shaders": "0.0.78",
 		"@tailwindcss/vite": "^4.2.0",
+		"@tanstack/ai-models": "https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636",
 		"astro": "7.1.6",
 		"tailwindcss": "^4.2.0"
 	},

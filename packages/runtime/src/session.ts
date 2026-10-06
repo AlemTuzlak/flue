@@ -1,35 +1,12 @@
 import type { McpUnavailableConnection } from './mcp-types.ts';
 import { modelContextCompactionFields } from './model-request-info.ts';
+
 /**
  * Internal session implementation. Not exported publicly — user code receives
  * the facade from `createPublicSession()`, which exposes exactly the
  * `FlueSession` contract.
  */
 
-import type {
-	AgentLoopTurnUpdate,
-	AgentMessage,
-	AgentTool,
-	AgentToolResult,
-	PrepareNextTurnContext,
-	StreamFn,
-} from '@earendil-works/pi-agent-core';
-import { Agent } from '@earendil-works/pi-agent-core';
-import type {
-	AssistantMessage,
-	ImageContent,
-	Message,
-	Model,
-	SimpleStreamOptions,
-	ToolResultMessage,
-	UserMessage,
-} from '@earendil-works/pi-ai';
-import {
-	createInitialSystemMessage,
-	getCurrentSystemPrompt,
-	getCurrentTools,
-	toToolDeclaration,
-} from '@earendil-works/pi-ai';
 import type * as v from 'valibot';
 import {
 	abandonToolOnAbort,
@@ -60,6 +37,13 @@ import {
 	DURABILITY_DEFAULT_TIMEOUT_MS,
 	type SubmissionDurability,
 } from './agent-execution-store.ts';
+import {
+	AgentLoop,
+	type CompletedTurn,
+	createInitialSystemMessage,
+	type ModelCallRequest,
+	toToolDeclaration,
+} from './agent-loop.ts';
 import { decodeBase64, encodeBase64 } from './base64.ts';
 import {
 	type CompactionSettings,
@@ -68,6 +52,7 @@ import {
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,
 	deriveCompactionDefaults,
+	estimateContextTokens,
 	isAssistantContextOverflow,
 	prepareCompaction,
 	shouldCompact,
@@ -100,11 +85,7 @@ import {
 	toolResultEntryId,
 } from './conversation-reducer.ts';
 import type { ConversationRecordWriter } from './conversation-writer.ts';
-import {
-	mergeOperationAttachments,
-	prepareDocumentRequest,
-	toPublicAttachment,
-} from './document-attachments.ts';
+import { mergeOperationAttachments, toPublicAttachment } from './document-attachments.ts';
 import {
 	AttachmentNotAvailableError,
 	ConversationRecordInvariantError,
@@ -132,6 +113,15 @@ import {
 } from './harness-tool-lineage.ts';
 import { resolveSubagentDefinition } from './hooks/render.ts';
 import type { HookStateBuffer, HookStateWrite } from './hooks/use-persistent-state.ts';
+import type {
+	AgentMessage,
+	AgentTool,
+	AgentToolResult,
+	AssistantMessage,
+	ImageContent,
+	ToolResultMessage,
+	UserMessage,
+} from './llm-types.ts';
 import {
 	type AgentFinishContext,
 	type AgentFinishDeclaration,
@@ -148,6 +138,9 @@ import {
 import { createUserContextMessage, renderSignalMessage } from './message-rendering.ts';
 import { assertImagesWithinLimit } from './persisted-images.ts';
 import { readProviderResponseDiagnostics } from './provider-diagnostics.ts';
+import { createModelAdapter, wrapModelAdapter } from './providers/adapters.ts';
+import { type FlueModel, resolveProviderAuth } from './providers/provider.ts';
+import { getProvider } from './providers/registry.ts';
 import {
 	diffResourceSnapshots,
 	INSTRUCTIONS_UPDATED_SIGNAL_BODY,
@@ -188,7 +181,7 @@ import {
 	generateTaskId,
 	generateTurnId,
 } from './runtime/ids.ts';
-import { getRuntimeModels, providerTelemetryName } from './runtime/providers.ts';
+import { providerTelemetryName } from './runtime/providers.ts';
 import { createCwdSandbox } from './sandbox.ts';
 import { valibotToJsonSchema } from './schema.ts';
 import { execShellWithEvents, getErrorMessage } from './shell.ts';
@@ -243,6 +236,13 @@ import type {
 	ToolStep,
 } from './types.ts';
 import { addUsage, emptyUsage, fromProviderUsage } from './usage.ts';
+
+/** What a model call asks for, for its request observation. */
+interface ModelCallOptions {
+	reasoning?: ThinkingLevel;
+	maxTokens?: number;
+	temperature?: number;
+}
 
 const MAX_DELEGATION_DEPTH = 4;
 const MAX_TRANSIENT_MODEL_RETRIES = 3;
@@ -344,7 +344,11 @@ function toTurnMessage(message: AgentMessage): TurnInputMessage {
 
 function toTurnContent(block: ProviderContentBlock): TurnContent {
 	if (block.type === 'text') {
-		return { type: 'text', text: block.text, textSignature: block.textSignature };
+		return {
+			type: 'text',
+			text: block.text,
+			textSignature: block.textSignature,
+		};
 	}
 	if (block.type === 'image') {
 		// Events never carry raw image bytes — see redactEventImages().
@@ -409,7 +413,11 @@ interface CreateActionHarnessOptions {
 	tools: ToolDefinition[];
 	retainSession(
 		session: string,
-		conversation: { conversationId: string; affinityKey: string; createdAt: string },
+		conversation: {
+			conversationId: string;
+			affinityKey: string;
+			createdAt: string;
+		},
 		harness: string,
 	): Promise<void>;
 }
@@ -627,33 +635,6 @@ function getRegisteredPackagedSkills(
 	return registered;
 }
 
-function wrapProviderStream<T extends AsyncIterable<unknown> & { result(): Promise<unknown> }>(
-	stream: T,
-	operation: { type: 'model'; turnId: string },
-	executionContext: FlueExecutionContext,
-): T {
-	return {
-		[Symbol.asyncIterator]() {
-			const iterator = stream[Symbol.asyncIterator]();
-			const returnIterator = iterator.return?.bind(iterator);
-			const throwIterator = iterator.throw?.bind(iterator);
-			return {
-				next: () => interceptExecution(operation, executionContext, () => iterator.next()),
-				return: returnIterator
-					? () => interceptExecution(operation, executionContext, returnIterator)
-					: undefined,
-				throw: throwIterator
-					? (error: unknown) =>
-							interceptExecution(operation, executionContext, () => throwIterator(error))
-					: undefined,
-			};
-		},
-		result() {
-			return interceptExecution(operation, executionContext, () => stream.result());
-		},
-	} as T;
-}
-
 function parseProviderEndpoint(
 	value: string | undefined,
 ): { address: string; port?: number } | undefined {
@@ -695,7 +676,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	readonly conversationId: string;
 	readonly fs: FlueFs;
 
-	private agentLoop: Agent;
+	private agentLoop: AgentLoop;
 	private affinityKey: string;
 	private config: AgentConfig;
 	/**
@@ -774,7 +755,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				messageId: string;
 				blocks: Map<
 					number,
-					{ id: string; type: 'text' | 'reasoning'; deltaCount: number; completed: boolean }
+					{
+						id: string;
+						type: 'text' | 'reasoning';
+						deltaCount: number;
+						completed: boolean;
+					}
 				>;
 		  }
 		| undefined;
@@ -853,23 +839,58 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	/** The active submission's canonical input entry id (delivery-cursor floor). */
 	private activeInputEntryId: string | undefined;
 
-	private emitTurnRequestAndStream: StreamFn = async (model, requestContext, requestOptions) => {
-		// Documents ride pi's image carrier; rewrite them into native document
-		// blocks (or placeholders) for this model's API. No-op without documents.
-		const { context, options } = prepareDocumentRequest(model, requestContext, requestOptions);
+	/** The turn and operation of the running model call, for the interceptor around each stream step. */
+	private modelCallContext: { turnId: string; operationId: string } | undefined;
+
+	/** Before each model call of the loop: the call's turn, and its request observation. */
+	private onModelCallRequest = (request: ModelCallRequest) => {
 		if (this.activeTurnId === undefined) this.activeTurnId = generateTurnId();
 		const turnId = this.activeTurnId;
-		const operationId = this.activeOperationId ?? generateOperationId();
-		this.emitTurnRequest(turnId, 'agent', model, context, options);
-		const operation = { type: 'model' as const, turnId };
-		const executionContext = this.executionContext({ operationId, turnId });
-		return interceptExecution(operation, executionContext, async () =>
-			wrapProviderStream(
-				getRuntimeModels().streamSimple(model, context, options),
-				operation,
-				executionContext,
-			),
+		this.modelCallContext = {
+			turnId,
+			operationId: this.activeOperationId ?? generateOperationId(),
+		};
+		this.emitTurnRequest(
+			turnId,
+			'agent',
+			request.model,
+			{
+				systemPrompt: request.systemPrompt,
+				messages: request.messages,
+				tools: request.tools,
+			},
+			// pi sent no reasoning option for `off`.
+			request.thinkingLevel === 'off' ? undefined : { reasoning: request.thinkingLevel },
 		);
+	};
+
+	/** The provider's adapter for `model`, with the auth it resolves now. */
+	private async providerAdapter(model: FlueModel, signal: AbortSignal) {
+		const provider = getProvider(model.provider);
+		if (!provider) throw new Error(`[flue] Unknown provider "${model.provider}".`);
+		return createModelAdapter(provider, model, {
+			auth: await resolveProviderAuth(provider, signal),
+			promptCacheKey: this.affinityKey,
+		});
+	}
+
+	/** The adapter for one loop run on `model`: the provider's adapter, and the interceptor around each stream step. */
+	private createModelAdapterForCall = async (model: FlueModel, signal: AbortSignal) => {
+		const adapter = await this.providerAdapter(model, signal);
+		return wrapModelAdapter(adapter, model, {
+			intercept: (run) => {
+				const call = this.modelCallContext ?? {
+					turnId: this.activeTurnId ?? generateTurnId(),
+					operationId: this.activeOperationId ?? generateOperationId(),
+				};
+				return interceptExecution(
+					{ type: 'model', turnId: call.turnId },
+					this.executionContext(call),
+					run,
+				);
+			},
+			contextTokens: () => estimateContextTokens(this.agentLoop.state.messages),
+		});
 	};
 
 	private canonicalEnvelope(type: ConversationRecord['type'], id = generateConversationRecordId()) {
@@ -891,7 +912,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	private canonicalAppendOptions() {
 		const submission =
 			this.activeSubmissionId && this.activeSubmissionAttemptId
-				? { submissionId: this.activeSubmissionId, attemptId: this.activeSubmissionAttemptId }
+				? {
+						submissionId: this.activeSubmissionId,
+						attemptId: this.activeSubmissionAttemptId,
+					}
 				: undefined;
 		return submission ? { submission } : {};
 	}
@@ -929,17 +953,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	}
 
 	/**
-	 * Render-per-turn: re-render the agent function and hand the
-	 * loop a replacement context for its next provider request. The wrapper's
-	 * `state.messages` tracks the run (every assistant/tool-result message got
-	 * a `message_end`), so the rebuilt context loses nothing. Also syncs the
-	 * wrapper state so later runs snapshot the fresh values. An invariance
-	 * violation (conditional use()/hook) throws here and fails the run.
+	 * Render-per-turn: re-render the agent function and update the loop's
+	 * tools and system prompt for its next provider request (the loop reads
+	 * both from its state). An invariance violation (conditional use()/hook)
+	 * throws here and fails the run.
 	 */
-	private async prepareRerenderTurn(
-		turn?: PrepareNextTurnContext,
-	): Promise<AgentLoopTurnUpdate | undefined> {
-		if (!this.rerender) return undefined;
+	private async prepareRerenderTurn(turn?: CompletedTurn): Promise<void> {
+		if (!this.rerender) return;
 		let next = this.rerender();
 		// Environment swap: a conditional useSandbox() whose presence flipped
 		// since initialization takes effect HERE, at the turn boundary — the
@@ -991,16 +1011,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				: undefined;
 		if (swapped) await this.narrateEnvironmentSnapshot(next.resources.snapshot);
 		else await this.narrateResourceDelta(anchor);
-		return {
-			context: {
-				// pi 0.87 derives the system prompt from the transcript's leading
-				// system message (see updateAgentSystemPrompt); the returned
-				// context carries the updated messages so the next provider
-				// request sees the recomposed prompt and tool declarations.
-				messages: this.agentLoop.state.messages.slice(),
-				tools: this.agentLoop.state.tools,
-			},
-		};
 	}
 
 	/**
@@ -1015,7 +1025,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		if (lead && lead.role === 'system') {
 			messages[0] = { ...lead, content: prompt };
 		} else {
-			messages.unshift({ role: 'system', content: prompt, timestamp: Date.now() });
+			messages.unshift({
+				role: 'system',
+				content: prompt,
+				timestamp: Date.now(),
+			});
 		}
 		this.agentLoop.state.messages = messages;
 	}
@@ -1766,7 +1780,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		if (!alreadyApplied) {
 			const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
 			await this.appendCanonical([
-				await this.buildSubmissionInputRecord(input, parentId, { asJoinedDelivery: true }),
+				await this.buildSubmissionInputRecord(input, parentId, {
+					asJoinedDelivery: true,
+				}),
 			]);
 			await this.steerJoinedEntry(entryId);
 		}
@@ -1822,7 +1838,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			if (submission.status === 'joining') {
 				if (await this.conversationWriter.hasConversationEntry(this.conversationId, entryId)) {
 					this.advanceDelivery?.(input.message);
-					await this.runAgentStartHooks(signal, input.submissionId, { joined: true });
+					await this.runAgentStartHooks(signal, input.submissionId, {
+						joined: true,
+					});
 					await source.finalize(input.submissionId);
 				} else {
 					await source.revert(input.submissionId);
@@ -1830,7 +1848,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				continue;
 			}
 			this.advanceDelivery?.(input.message);
-			await this.runAgentStartHooks(signal, input.submissionId, { joined: true });
+			await this.runAgentStartHooks(signal, input.submissionId, {
+				joined: true,
+			});
 		}
 		// The per-delivery advances above track hook re-runs in admission
 		// order; the durable record stream then restores the true latest input
@@ -1995,7 +2015,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			level: 'info' | 'warn' | 'error',
 			message: string,
 			attributes?: Record<string, unknown>,
-		) => this.emit({ type: 'log', level, message, attributes: { ...attributes, ...base } });
+		) =>
+			this.emit({
+				type: 'log',
+				level,
+				message,
+				attributes: { ...attributes, ...base },
+			});
 		return {
 			info: (message: string, attributes?: Record<string, unknown>) =>
 				emit('info', message, attributes),
@@ -2114,9 +2140,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	}
 
 	private modelRequestInfo(
-		model: Model<any> | undefined,
+		model: FlueModel | undefined,
 		purpose: 'agent' | 'compaction' | 'compaction_prefix',
-		options?: SimpleStreamOptions,
+		options?: ModelCallOptions,
 	): ModelRequestInfo {
 		if (!model) throw new Error('[flue] Missing configured model for turn telemetry.');
 		const parsedEndpoint = parseProviderEndpoint(model.baseUrl);
@@ -2140,24 +2166,23 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	private emitTurnRequest(
 		turnId: string,
 		purpose: 'agent' | 'compaction' | 'compaction_prefix',
-		model: Model<any>,
+		model: FlueModel,
 		context: {
-			systemPrompt?: string;
-			messages: Message[];
-			tools?: Array<{ name: string; description: string; parameters: unknown }>;
+			systemPrompt: string;
+			messages: readonly AgentMessage[];
+			tools: ReadonlyArray<{
+				name: string;
+				description: string;
+				parameters: unknown;
+			}>;
 		},
-		options: SimpleStreamOptions | undefined,
+		options: ModelCallOptions | undefined,
 	): void {
-		// pi 0.87 passes a transcript context: the prompt and tool declarations
-		// ride in the transcript's system messages, so fall back to pi's
-		// transcript readers when the fields are absent.
-		const tools = (context.tools ?? getCurrentTools(context.messages)).map(
-			(tool): TurnInputTool => ({
-				name: tool.name,
-				description: tool.description,
-				parameters: tool.parameters,
-			}),
-		);
+		const tools = context.tools.map((tool): TurnInputTool => ({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+		}));
 		const request = this.modelRequestInfo(model, purpose, options);
 		this.modelRequests.set(turnId, { info: request, startedAt: Date.now() });
 		this.emit({
@@ -2167,11 +2192,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			request: {
 				...request,
 				input: {
-					systemPrompt: context.systemPrompt ?? getCurrentSystemPrompt(context.messages),
-					// pi 0.87 passes a transcript: generated system messages (prompt +
-					// tool declarations) are excluded from the public messages
-					// projection — the pre-PR event contract had none — and their
-					// content surfaces through the systemPrompt/tools fields above.
+					systemPrompt: context.systemPrompt,
+					// The transcript's leading system message holds the prompt and the
+					// tool declarations; the public projection excludes it (the event
+					// contract never had one), and its content surfaces through the
+					// systemPrompt/tools fields above.
 					messages: context.messages
 						.filter((message) => message.role !== 'system')
 						.map(toTurnMessage),
@@ -2271,7 +2296,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 
 		const previousMessages: AgentMessage[] = [];
 
-		this.agentLoop = new Agent({
+		this.agentLoop = new AgentLoop({
 			initialState: {
 				systemPrompt,
 				model: this.config.model,
@@ -2279,24 +2304,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				messages: previousMessages,
 				thinkingLevel: this.config.thinkingLevel ?? 'medium',
 			},
-			streamFn: this.emitTurnRequestAndStream,
-			toolExecution: 'parallel',
-			// Queued messages always drain together at the next boundary — 'all'
-			// is Flue's only queue behavior. The steering queue carries joined
-			// deliveries and finish-continuation appends: everything steered at a
-			// boundary reaches the model together at the next turn start (pi's
-			// one-at-a-time default would spread them across turns). Flue never
-			// calls followUp(), but the mode is pinned so no latent
-			// one-at-a-time behavior survives anywhere.
-			steeringMode: 'all',
-			followUpMode: 'all',
 			sessionId: this.affinityKey,
+			createAdapter: this.createModelAdapterForCall,
+			onModelRequest: this.onModelCallRequest,
 			// Render-per-turn (function agents): runs after the turn_end handler
 			// has committed the tool batch (state writes durable), so the next
 			// provider request gets fresh tool closures and a recomposed prompt.
-			...(options.rerender
-				? { prepareNextTurnWithContext: (turn) => this.prepareRerenderTurn(turn) }
-				: {}),
+			...(options.rerender ? { prepareNextTurn: (turn) => this.prepareRerenderTurn(turn) } : {}),
 		});
 
 		this.eventCallback = options.onAgentEvent;
@@ -2307,7 +2321,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					break;
 				case 'turn_start':
 					this.activeTurnId ??= generateTurnId();
-					this.emit({ type: 'turn_start', turnId: this.activeTurnId, purpose: 'agent' });
+					this.emit({
+						type: 'turn_start',
+						turnId: this.activeTurnId,
+						purpose: 'agent',
+					});
 					break;
 				case 'message_start': {
 					const turnId = this.activeTurnId ?? generateTurnId();
@@ -2422,7 +2440,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 								blockIndex: aEvent.contentIndex,
 							},
 						]);
-						this.emit({ type: 'thinking_start', contentIndex: aEvent.contentIndex });
+						this.emit({
+							type: 'thinking_start',
+							contentIndex: aEvent.contentIndex,
+						});
 					} else if (assistant && aEvent.type === 'thinking_delta') {
 						const block = assistant.blocks.get(aEvent.contentIndex);
 						if (block?.type !== 'reasoning')
@@ -2742,14 +2763,17 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					break;
 				}
 				case 'agent_end':
-					this.emit({ type: 'agent_end', messages: event.messages });
+					this.emit({
+						type: 'agent_end',
+						messages: event.messages,
+					});
 					this.activeTurnId = undefined;
 					break;
 			}
 		});
 	}
 
-	private resolveCompactionSettings(model: Model<any> | undefined): CompactionSettings {
+	private resolveCompactionSettings(model: FlueModel | undefined): CompactionSettings {
 		const cc = this.config.compaction;
 		const defaults = model
 			? deriveCompactionDefaults({
@@ -3116,7 +3140,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			this.activeTasks.add(child);
 			// Child shares the parent's deadline (D1). No `task_start` re-emit on
 			// resume (D-C) — only the terminal `task` event below.
-			const text = await child.resumeReattachedChild({ timeoutAt: this.activeTimeoutAt, signal });
+			const text = await child.resumeReattachedChild({
+				timeoutAt: this.activeTimeoutAt,
+				signal,
+			});
 			this.emit({
 				type: 'task',
 				taskId: ref.taskId,
@@ -3464,7 +3491,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			return false;
 		}
 
-		await this.settleTrailingToolBatch({ submissionId: this.activeSubmissionId });
+		await this.settleTrailingToolBatch({
+			submissionId: this.activeSubmissionId,
+		});
 		// Writes buffered inside the interrupted batch did not reach its normal
 		// commit point and must not leak into Pi's failure-assistant turn.
 		this.hookState?.drain();
@@ -3647,7 +3676,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		// contract of terminalization, not a caller responsibility: every
 		// terminal path (retry exhaustion, timeout, post-input interruption,
 		// abort) routes through here.
-		await this.settleDanglingConversationState({ submissionId: input.submissionId });
+		await this.settleDanglingConversationState({
+			submissionId: input.submissionId,
+		});
 		// Abort repair can be committed by the attempt's Session before terminal
 		// cleanup opens this fresh one. Recover interrupted IDs from deterministic
 		// repair records rather than relying on in-memory handoff or result text.
@@ -3825,7 +3856,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * resolves via `resolveModel` (which throws on an invalid specifier and never
 	 * returns undefined for a defined one); the agent default is always present.
 	 */
-	private resolveModelForCall(modelSpecifier: string | undefined): Model<any> {
+	private resolveModelForCall(modelSpecifier: string | undefined): FlueModel {
 		if (!modelSpecifier) return this.config.model;
 		const model = this.config.resolveModel(modelSpecifier);
 		if (!model) throw new Error(`[flue] Model "${modelSpecifier}" could not be resolved.`);
@@ -4090,7 +4121,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				parameters: (preparedToolAdapter?.parameters ??
 					(toolDef.input
 						? valibotToJsonSchema(toolDef.input)
-						: { type: 'object', properties: {}, additionalProperties: false })) as any,
+						: {
+								type: 'object',
+								properties: {},
+								additionalProperties: false,
+							})) as any,
 				execute: async () => {
 					throw new Error('unreachable');
 				},
@@ -4104,15 +4139,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					return {
 						args: params,
 						run: async () => ({
-							content: [
-								{
-									type: 'text' as const,
-									text: await preparedToolAdapter.execute(
-										params as Record<string, unknown>,
-										mergedSignal,
-									),
-								},
-							],
+							content: await preparedToolAdapter.execute(
+								params as Record<string, unknown>,
+								mergedSignal,
+							),
 							details: { customTool: toolDef.name },
 						}),
 						result: toolResultText,
@@ -4123,7 +4153,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					log: toolLogger,
 					toolCallId,
 					...(toolDef.durable
-						? { step: this.createToolStep(toolDef.name, toolCallId, toolLogger) }
+						? {
+								step: this.createToolStep(toolDef.name, toolCallId, toolLogger),
+							}
 						: {}),
 				});
 				return {
@@ -4140,7 +4172,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 							: undefined;
 						try {
 							const context = harness
-								? ({ ...parsed.context, harness } as unknown as typeof parsed.context)
+								? ({
+										...parsed.context,
+										harness,
+									} as unknown as typeof parsed.context)
 								: parsed.context;
 							const resolved = resolveToolRun(
 								toolDef,
@@ -4189,7 +4224,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	): AgentTool<any>[] {
 		const groups: ModelToolGroup[] = [
 			...baseGroups,
-			{ source: 'custom' as const, tools: this.createCustomTools(customDefinitions) },
+			{
+				source: 'custom' as const,
+				tools: this.createCustomTools(customDefinitions),
+			},
 			{ source: 'result' as const, tools: extraTools },
 		];
 		const seen = new Map<string, (typeof groups)[number]['source']>();
@@ -4324,7 +4362,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 
 	private async withCallOverrides<T>(
 		options: CallOverrides,
-		fn: (ctx: { resolvedModel: Model<any> }) => Promise<T>,
+		fn: (ctx: { resolvedModel: FlueModel }) => Promise<T>,
 	): Promise<T> {
 		const previousTools = this.agentLoop.state.tools;
 		const previousModel = this.agentLoop.state.model;
@@ -4372,7 +4410,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		const subagents = this.liveSubagents;
 		const subagent = subagents[name];
 		if (!subagent) {
-			throw new SubagentNotDeclaredError({ subagent: name, available: Object.keys(subagents) });
+			throw new SubagentNotDeclaredError({
+				subagent: name,
+				available: Object.keys(subagents),
+			});
 		}
 		// Capability-backed delegates render here — at delegation time, fresh
 		// per task (resume included), outside any parent render — into the
@@ -4502,7 +4543,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					agentInput: {
 						text: buildPromptText(text, options?.result),
 						...(options?.images?.length
-							? { images: options.images.map((image) => ({ mimeType: image.mimeType })) }
+							? {
+									images: options.images.map((image) => ({
+										mimeType: image.mimeType,
+									})),
+								}
 							: {}),
 					},
 					...(options?.toolCallId ? { toolCallId: options.toolCallId } : {}),
@@ -4603,7 +4648,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			this.activeOperationId = generateOperationId();
 			const operationId = this.activeOperationId;
 			const startedAt = Date.now();
-			this.emit({ type: 'operation_start', operationId, operationKind: operation });
+			this.emit({
+				type: 'operation_start',
+				operationId,
+				operationKind: operation,
+			});
 
 			// Mirror Session.abort() for the duration of this call.
 			// shell() doesn't use the agent loop/compaction/tasks — these
@@ -4632,7 +4681,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						usage: usageFromResult(result),
 					},
 					operation === 'prompt' || operation === 'skill'
-						? { agentInput: this.activeAgentInput, agentOutput: this.agentInvocationOutput(result) }
+						? {
+								agentInput: this.activeAgentInput,
+								agentOutput: this.agentInvocationOutput(result),
+							}
 						: undefined,
 				);
 				return result;
@@ -4649,7 +4701,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						error: serializeEventError(surfaced),
 					},
 					operation === 'prompt' || operation === 'skill'
-						? { agentInput: this.activeAgentInput, errorInfo: classifyError(surfaced) }
+						? {
+								agentInput: this.activeAgentInput,
+								errorInfo: classifyError(surfaced),
+							}
 						: { errorInfo: classifyError(surfaced) },
 				);
 				throw surfaced;
@@ -4665,7 +4720,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	private async runExclusive<T>(operation: OperationKind, fn: () => Promise<T>): Promise<T> {
 		this.assertActive();
 		if (this.activeOperation) {
-			throw new SessionBusyError({ session: this.name, activeOperation: this.activeOperation });
+			throw new SessionBusyError({
+				session: this.name,
+				activeOperation: this.activeOperation,
+			});
 		}
 		this.activeOperation = operation;
 		this.activeOperationSettlement = new Promise<void>((resolve) => {
@@ -4738,7 +4796,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	): Map<string, import('./conversation-records.ts').AttachmentRef> {
 		const available = new Map<string, import('./conversation-records.ts').AttachmentRef>();
 		for (const contextEntry of buildConversationContextEntries(conversation, {
-			resolveAttachment: (attachment) => ({ data: attachment.id, mimeType: attachment.mimeType }),
+			resolveAttachment: (attachment) => ({
+				data: attachment.id,
+				mimeType: attachment.mimeType,
+			}),
 		})) {
 			if (contextEntry.sourceEntry.type !== 'message') continue;
 			for (const attachment of contextEntry.sourceEntry.attachmentRefs?.values() ?? []) {
@@ -4749,7 +4810,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	}
 
 	private async persistCanonicalAttachments(
-		attachments: ReadonlyArray<{ id: string; mimeType: string; data: string; filename?: string }>,
+		attachments: ReadonlyArray<{
+			id: string;
+			mimeType: string;
+			data: string;
+			filename?: string;
+		}>,
 	): Promise<import('./conversation-records.ts').AttachmentRef[]> {
 		const refs: import('./conversation-records.ts').AttachmentRef[] = [];
 		for (const attachment of attachments) {
@@ -4783,7 +4849,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		const refs = await this.persistCanonicalAttachments(
 			result.content.flatMap((content, index) =>
 				content.type === 'image'
-					? [{ id: `att_${messageId}_${index}`, mimeType: content.mimeType, data: content.data }]
+					? [
+							{
+								id: `att_${messageId}_${index}`,
+								mimeType: content.mimeType,
+								data: content.data,
+							},
+						]
 					: [],
 			),
 		);
@@ -5168,7 +5240,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			const contextEntries = buildConversationContextEntries(canonicalConversation, {
 				resolveAttachment: (attachment) => {
 					const image = resolvedAttachments.get(attachment.id);
-					if (!image) throw new AttachmentNotAvailableError({ attachmentId: attachment.id });
+					if (!image)
+						throw new AttachmentNotAvailableError({
+							attachmentId: attachment.id,
+						});
 					return image;
 				},
 			});
@@ -5214,7 +5289,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 
 			const result = await compact(
 				preparation,
-				summarizationModel,
+				{
+					model: summarizationModel,
+					adapter: await this.providerAdapter(
+						summarizationModel,
+						this.compactionAbortController.signal,
+					),
+				},
 				this.compactionAbortController.signal,
 				{
 					start: (purpose, model, context, options): CompactionTurnHandle => {
@@ -5225,7 +5306,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					run: (handle, execute) =>
 						interceptExecution(
 							{ type: 'model', turnId: handle.turnId },
-							this.executionContext({ operationId: this.activeOperationId, turnId: handle.turnId }),
+							this.executionContext({
+								operationId: this.activeOperationId,
+								turnId: handle.turnId,
+							}),
 							execute,
 						),
 					end: (purpose, handle, response, error): void => {
@@ -5301,7 +5385,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			return true;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
-			this.internalLog('error', `[flue:compaction] Failed: ${errorMessage}`, { error });
+			this.internalLog('error', `[flue:compaction] Failed: ${errorMessage}`, {
+				error,
+			});
 			if (terminalPending) {
 				this.emit(
 					{
@@ -5330,7 +5416,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		attributes?: Record<string, unknown>,
 	): void {
 		if (level === 'error') console.error(message);
-		this.emit({ type: 'log', level, message, attributes: normalizeLogAttributes(attributes) });
+		this.emit({
+			type: 'log',
+			level,
+			message,
+			attributes: normalizeLogAttributes(attributes),
+		});
 	}
 
 	private throwIfError(context: string): void {
@@ -5368,7 +5459,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			for (let i = messages.length - 1; i >= 0; i--) {
 				const message = messages[i];
 				if (message?.role === 'assistant') {
-					return { type: 'text', text: result.text, finishReason: message.stopReason };
+					return {
+						type: 'text',
+						text: result.text,
+						finishReason: message.stopReason,
+					};
 				}
 			}
 		}
@@ -5504,7 +5599,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				parentId,
 				content: [
 					{ type: 'text', text: message.body },
-					...refs.map((attachment) => ({ type: 'attachment' as const, attachment })),
+					...refs.map((attachment) => ({
+						type: 'attachment' as const,
+						attachment,
+					})),
 				],
 			};
 		}
@@ -5624,7 +5722,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				await this.runModelTurnWithRecovery({
 					start: () => this.agentLoop.continue(),
 					signal: options.signal,
-					resume: { assistant: state.assistant, errorLabel: options.errorLabel },
+					resume: {
+						assistant: state.assistant,
+						errorLabel: options.errorLabel,
+					},
 				});
 				this.throwIfError(options.errorLabel);
 				break;
@@ -5638,7 +5739,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				await this.runModelTurnWithRecovery({
 					start: () => this.agentLoop.continue(),
 					signal: options.signal,
-					resume: { assistant: state.assistant, errorLabel: options.errorLabel },
+					resume: {
+						assistant: state.assistant,
+						errorLabel: options.errorLabel,
+					},
 				});
 				this.throwIfError(options.errorLabel);
 				break;
@@ -5902,7 +6006,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						parentId: beforeLeafId,
 						content: [
 							{ type: 'text', text: args.promptText },
-							...refs.map((attachment) => ({ type: 'attachment' as const, attachment })),
+							...refs.map((attachment) => ({
+								type: 'attachment' as const,
+								attachment,
+							})),
 						],
 					},
 				]);
@@ -5923,7 +6030,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				const projectedImages = projectedContent.filter(
 					(block): block is ImageContent => block.type === 'image',
 				);
-				const model: PromptModel = { provider: resolvedModel.provider, id: resolvedModel.id };
+				const model: PromptModel = {
+					provider: resolvedModel.provider,
+					id: resolvedModel.id,
+				};
 
 				if (resultBundle) {
 					const result = await this.runWithResultTools(
@@ -5986,7 +6096,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				// assistant-role messages), so a context rebuild during recovery
 				// drops it; the initial prompt is canonical and continues fine.
 				...(attempt > 0
-					? { restart: () => this.agentLoop.prompt(buildResultFollowUpPrompt()) }
+					? {
+							restart: () => this.agentLoop.prompt(buildResultFollowUpPrompt()),
+						}
 					: {}),
 				signal,
 			});

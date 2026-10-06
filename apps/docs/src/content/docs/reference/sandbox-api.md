@@ -257,7 +257,11 @@ Wraps a [just-bash](https://github.com/vercel-labs/just-bash) `Bash` instance in
 interface BashLike {
   exec(
     command: string,
-    options?: { cwd?: string; env?: Record<string, string>; signal?: AbortSignal },
+    options?: {
+      cwd?: string;
+      env?: Record<string, string>;
+      signal?: AbortSignal;
+    },
   ): Promise<ShellResult>;
   getCwd(): string;
   fs: {
@@ -300,20 +304,21 @@ The replacement covers only the framework's built-in group. Unaffected by it:
 
 Tool names must be unique across all groups, and the names `task`, `activate_skill`, `read_skill_resource`, `finish`, and `give_up` are framework-reserved. A collision throws [`ToolNameConflictError`](/docs/reference/errors/#toolnameconflicterror) when the tool list is assembled.
 
-The element type is `AgentTool` from `@earendil-works/pi-agent-core` (a dependency of `@flue/runtime`; the type is not re-exported). Structurally:
+The element type is Flue's `AgentTool`. The type is not exported. Structurally:
 
 ```ts
-interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
+interface AgentTool<TParams = any, TDetails = any> {
   name: string;
   label: string;
   description: string;
-  parameters: TParameters; // TypeBox schema
+  parameters: object; // the JSON Schema of the arguments
   execute(
     toolCallId: string,
-    params: Static<TParameters>,
+    params: TParams,
     signal?: AbortSignal,
     onUpdate?: (partial: AgentToolResult<TDetails>) => void,
   ): Promise<AgentToolResult<TDetails>>; // { content, details, terminate? }
+  replay?: 'never' | 'safe'; // a call that a crash cut: 'safe' runs it again, 'never' (default) gives the model an error
 }
 ```
 

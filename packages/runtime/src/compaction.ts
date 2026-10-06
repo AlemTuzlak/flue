@@ -6,20 +6,24 @@
  * 1. Threshold — tokens exceed (contextWindow - reserveTokens). Compact, no retry.
  * 2. Overflow — LLM returned context overflow. Compact, then auto-retry.
  */
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import {
+	type AnyTextAdapter,
+	isContextOverflow,
+	type ModelMessage,
+	type SystemPrompt,
+} from '@tanstack/ai';
+import { conversationSummarizer } from '@tanstack/ai-compaction';
+import { WORKERS_AI_OVERFLOW_MARKER } from './errors.ts';
 import type {
+	AgentMessage,
 	AssistantMessage,
-	Context,
-	Model,
-	SimpleStreamOptions,
-	TextContent,
 	ToolResultMessage,
 	Usage,
 	UserMessage,
-} from '@earendil-works/pi-ai';
-import { isContextOverflow } from '@earendil-works/pi-ai';
-import { WORKERS_AI_OVERFLOW_MARKER } from './errors.ts';
-import { getRuntimeModels } from './runtime/providers.ts';
+} from './llm-types.ts';
+import { AssistantStreamAssembler, modelInfo, toModelRequest } from './model-messages.ts';
+import { outputTokenOptions } from './providers/adapters.ts';
+import type { FlueModel } from './providers/provider.ts';
 import type { PromptUsage } from './types.ts';
 import { addUsage, fromProviderUsage } from './usage.ts';
 
@@ -151,7 +155,8 @@ function estimateTokens(message: AgentMessage): number {
 	return 0;
 }
 
-function estimateContextTokens(messages: AgentMessage[]): number {
+/** pi's estimate: the last assistant's reported usage, plus chars/4 for each later message. */
+export function estimateContextTokens(messages: AgentMessage[]): number {
 	const usageInfo = getLastAssistantUsageInfo(messages);
 	if (!usageInfo) {
 		let estimated = 0;
@@ -216,7 +221,10 @@ function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOps): voi
 	}
 }
 
-function computeFileLists(fileOps: FileOps): { readFiles: string[]; modifiedFiles: string[] } {
+function computeFileLists(fileOps: FileOps): {
+	readFiles: string[];
+	modifiedFiles: string[];
+} {
 	const modified = new Set([...fileOps.edited, ...fileOps.written]);
 	const readOnly = [...fileOps.read].filter((f) => !modified.has(f)).sort();
 	const modifiedFiles = [...modified].sort();
@@ -234,162 +242,6 @@ function formatFileOperations(readFiles: string[], modifiedFiles: string[]): str
 	if (sections.length === 0) return '';
 	return `\n\n${sections.join('\n\n')}`;
 }
-
-// ─── Message Serialization ──────────────────────────────────────────────────
-
-const TOOL_RESULT_MAX_CHARS = 2000;
-
-function truncateForSummary(text: string, maxChars: number): string {
-	if (text.length <= maxChars) return text;
-	const truncatedChars = text.length - maxChars;
-	return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
-}
-
-/** Serialize messages to text so the summarization model doesn't treat it as a conversation to continue. */
-function serializeConversation(messages: AgentMessage[]): string {
-	const parts: string[] = [];
-	for (const msg of messages) {
-		if (msg.role === 'user') {
-			const { content } = msg as UserMessage;
-			const text =
-				typeof content === 'string'
-					? content
-					: content
-							.filter((c): c is TextContent => c.type === 'text')
-							.map((c) => c.text)
-							.join('');
-			if (text) parts.push(`[User]: ${text}`);
-		} else if (msg.role === 'assistant') {
-			const { content } = msg as AssistantMessage;
-			const textParts: string[] = [];
-			const thinkingParts: string[] = [];
-			const toolCalls: string[] = [];
-			for (const block of content) {
-				if (block.type === 'text') {
-					textParts.push(block.text);
-				} else if (block.type === 'thinking') {
-					thinkingParts.push(block.thinking);
-				} else if (block.type === 'toolCall') {
-					const argsStr = Object.entries(block.arguments)
-						.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-						.join(', ');
-					toolCalls.push(`${block.name}(${argsStr})`);
-				}
-			}
-			if (thinkingParts.length > 0) {
-				parts.push(`[Assistant thinking]: ${thinkingParts.join('\n')}`);
-			}
-			if (textParts.length > 0) {
-				parts.push(`[Assistant]: ${textParts.join('\n')}`);
-			}
-			if (toolCalls.length > 0) {
-				parts.push(`[Assistant tool calls]: ${toolCalls.join('; ')}`);
-			}
-		} else if (msg.role === 'toolResult') {
-			const { content } = msg as ToolResultMessage;
-			const text = content
-				.filter((c): c is TextContent => c.type === 'text')
-				.map((c) => c.text)
-				.join('');
-			if (text) {
-				parts.push(`[Tool result]: ${truncateForSummary(text, TOOL_RESULT_MAX_CHARS)}`);
-			}
-		}
-	}
-	return parts.join('\n\n');
-}
-
-// ─── Summarization Prompts ──────────────────────────────────────────────────
-
-const SUMMARIZATION_SYSTEM_PROMPT =
-	'You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.';
-
-const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
-
-Use this EXACT format:
-
-## Goal
-[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
-
-## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned by user]
-- [Or "(none)" if none were mentioned]
-
-## Progress
-### Done
-- [x] [Completed tasks/changes]
-
-### In Progress
-- [ ] [Current work]
-
-### Blocked
-- [Issues preventing progress, if any]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale]
-
-## Next Steps
-1. [Ordered list of what should happen next]
-
-## Critical Context
-- [Any data, examples, or references needed to continue]
-- [Or "(none)" if not applicable]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-
-const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
-
-Update the existing structured summary with new information. RULES:
-- PRESERVE all existing information from the previous summary
-- ADD new progress, decisions, and context from the new messages
-- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
-- UPDATE "Next Steps" based on what was accomplished
-- PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
-
-Use this EXACT format:
-
-## Goal
-[Preserve existing goals, add new ones if the task expanded]
-
-## Constraints & Preferences
-- [Preserve existing, add new ones discovered]
-
-## Progress
-### Done
-- [x] [Include previously done items AND newly completed items]
-
-### In Progress
-- [ ] [Current work - update based on progress]
-
-### Blocked
-- [Current blockers - remove if resolved]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale] (preserve all previous, add new)
-
-## Next Steps
-1. [Update based on current state]
-
-## Critical Context
-- [Preserve important context, add new if needed]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
-
-Summarize the prefix to provide context for the retained suffix:
-
-## Original Request
-[What did the user ask for in this turn?]
-
-## Early Progress
-- [Key decisions and work done in the prefix]
-
-## Context for Suffix
-- [Information needed to understand the retained recent work]
-
-Be concise. Focus on what's needed to understand the kept suffix.`;
 
 // ─── Cut Point Detection ────────────────────────────────────────────────────
 
@@ -492,9 +344,13 @@ export interface CompactionTurnHandle {
 export interface CompactionTurnObserver {
 	start(
 		purpose: 'compaction' | 'compaction_prefix',
-		model: Model<any>,
-		context: Context,
-		options: SimpleStreamOptions,
+		model: FlueModel,
+		context: {
+			systemPrompt: string;
+			messages: AgentMessage[];
+			tools: [];
+		},
+		options: { maxTokens: number },
 	): CompactionTurnHandle;
 	run<T>(handle: CompactionTurnHandle, execute: () => Promise<T>): Promise<T>;
 	end(
@@ -558,107 +414,102 @@ export function prepareCompaction(
 
 // ─── Summary Generation ─────────────────────────────────────────────────────
 
+/** The text of a TanStack system prompt. */
+function systemPromptText(prompt: SystemPrompt) {
+	return typeof prompt === 'string' ? prompt : prompt.content;
+}
+
+/** A TanStack request message as a Flue message, for the request observation. */
+function observedMessage(message: ModelMessage): AgentMessage {
+	const text =
+		typeof message.content === 'string'
+			? message.content
+			: (message.content ?? []).map((part) => (part.type === 'text' ? part.content : '')).join('');
+	return {
+		role: 'user',
+		content: [{ type: 'text', text }],
+		timestamp: Date.now(),
+	};
+}
+
 /**
- * Owns the observer choreography, error check, and text extraction shared by
- * generateSummary and generateTurnPrefixSummary; those two only differ in the
- * prompt they build, the purpose label, and the error-message prefix.
+ * `adapter` with the observer around its one summary call: the request
+ * observation before it, each stream step inside `observer.run`, and the
+ * assembled answer after it.
  */
-async function runSummarizationCall(
+function observedAdapter(
+	adapter: AnyTextAdapter,
+	model: FlueModel,
 	purpose: 'compaction' | 'compaction_prefix',
-	promptText: string,
 	maxTokens: number,
-	model: Model<any>,
+	observer: CompactionTurnObserver,
+	onResponse: (response: AssistantMessage) => void,
+) {
+	const chatStream: AnyTextAdapter['chatStream'] = async function* (options) {
+		const handle = observer.start(
+			purpose,
+			model,
+			{
+				systemPrompt: options.systemPrompts?.map(systemPromptText).join('\n') ?? '',
+				messages: options.messages.map(observedMessage),
+				tools: [],
+			},
+			{ maxTokens },
+		);
+		const assembler = new AssistantStreamAssembler(modelInfo(model));
+		try {
+			const iterator = adapter.chatStream(options)[Symbol.asyncIterator]();
+			while (true) {
+				const step = await observer.run(handle, () => iterator.next());
+				if (step.done) break;
+				assembler.push(step.value);
+				yield step.value;
+			}
+			const response = assembler.finish();
+			onResponse(response);
+			observer.end(purpose, handle, response, undefined);
+		} catch (error) {
+			observer.end(purpose, handle, undefined, error);
+			throw error;
+		}
+	};
+	const observed: AnyTextAdapter = Object.create(adapter);
+	return Object.assign(observed, { chatStream });
+}
+
+/** One summary call with TanStack's summary prompt, observed as a Flue model turn. */
+async function summarize(
+	purpose: 'compaction' | 'compaction_prefix',
+	messages: AgentMessage[],
+	input: { previousSummary?: string; turnPrefix?: boolean },
+	maxTokens: number,
+	target: { model: FlueModel; adapter: AnyTextAdapter },
 	signal: AbortSignal,
 	observer: CompactionTurnObserver,
 	errorPrefix: string,
 ): Promise<{ text: string; usage: Usage | undefined }> {
-	const summarizationMessages: UserMessage[] = [
-		{ role: 'user', content: [{ type: 'text', text: promptText }], timestamp: Date.now() },
-	];
-
-	const completionOptions: SimpleStreamOptions = { maxTokens, signal };
-	if (model.reasoning) completionOptions.reasoning = 'high';
-
-	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
-	const handle = observer.start(purpose, model, context, completionOptions);
+	const { model } = target;
 	let response: AssistantMessage | undefined;
-	try {
-		response = await observer.run(handle, () =>
-			getRuntimeModels().completeSimple(model, context, completionOptions),
-		);
-		observer.end(purpose, handle, response, undefined);
-	} catch (error) {
-		observer.end(purpose, handle, undefined, error);
-		throw error;
-	}
-
-	if (response.stopReason === 'error') {
+	const summarizer = conversationSummarizer({
+		adapter: observedAdapter(target.adapter, model, purpose, maxTokens, observer, (answer) => {
+			response = answer;
+		}),
+		modelOptions: outputTokenOptions(model, maxTokens),
+	});
+	const request = toModelRequest({ systemPrompt: '', messages, tools: [] }, modelInfo(model));
+	const result = await summarizer(request.messages, { ...input, signal });
+	if (response?.stopReason === 'error') {
 		throw new Error(`${errorPrefix}: ${response.errorMessage || 'Unknown error'}`);
 	}
-
-	const text = response.content
-		.filter((c): c is TextContent => c.type === 'text')
-		.map((c) => c.text)
-		.join('\n');
-	return { text, usage: response.usage };
-}
-
-async function generateSummary(
-	currentMessages: AgentMessage[],
-	model: Model<any>,
-	reserveTokens: number,
-	signal: AbortSignal,
-	previousSummary: string | undefined,
-	observer: CompactionTurnObserver,
-): Promise<{ text: string; usage: Usage | undefined }> {
-	const maxTokens = Math.min(Math.floor(0.8 * reserveTokens), 16000);
-	const basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
-
-	const conversationText = serializeConversation(currentMessages);
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	promptText += basePrompt;
-
-	return runSummarizationCall(
-		'compaction',
-		promptText,
-		maxTokens,
-		model,
-		signal,
-		observer,
-		'Summarization failed',
-	);
-}
-
-async function generateTurnPrefixSummary(
-	messages: AgentMessage[],
-	model: Model<any>,
-	reserveTokens: number,
-	signal: AbortSignal,
-	observer: CompactionTurnObserver,
-): Promise<{ text: string; usage: Usage | undefined }> {
-	const maxTokens = Math.min(Math.floor(0.5 * reserveTokens), 16000);
-	const conversationText = serializeConversation(messages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-
-	return runSummarizationCall(
-		'compaction_prefix',
-		promptText,
-		maxTokens,
-		model,
-		signal,
-		observer,
-		'Turn prefix summarization failed',
-	);
+	const text = typeof result === 'string' ? result : result.summary;
+	return { text, usage: response?.usage };
 }
 
 // ─── Main Compaction Function ───────────────────────────────────────────────
 
 export async function compact(
 	preparation: CompactionPreparation,
-	model: Model<any>,
+	target: { model: FlueModel; adapter: AnyTextAdapter },
 	signal: AbortSignal,
 	observer: CompactionTurnObserver,
 ): Promise<CompactionResult> {
@@ -676,7 +527,7 @@ export async function compact(
 	// Sum the usage of every summarization call that produced a value.
 	// Split-turn compaction fires two calls; regular compaction fires one.
 	// A call may report `undefined` usage (rare provider behaviour) — those
-	// contribute zero. Normalize from pi-ai's `Usage` to Flue's `PromptUsage`
+	// contribute zero. Normalize the message `Usage` to Flue's `PromptUsage`
 	// at this boundary so the result is a persistable shape for the
 	// downstream `CompactionEntry`.
 	let aggregateUsage: PromptUsage | undefined;
@@ -686,38 +537,43 @@ export async function compact(
 		aggregateUsage = aggregateUsage ? addUsage(aggregateUsage, normalized) : normalized;
 	};
 
+	// pi's caps for the summary calls: 80% of the reserve for the history,
+	// 50% for a split turn's prefix, at most 16k tokens each.
+	const historyTokens = Math.min(Math.floor(0.8 * settings.reserveTokens), 16_000);
+	const prefixTokens = Math.min(Math.floor(0.5 * settings.reserveTokens), 16_000);
+	const summarizeHistory = () =>
+		summarize(
+			'compaction',
+			messagesToSummarize,
+			previousSummary ? { previousSummary } : {},
+			historyTokens,
+			target,
+			signal,
+			observer,
+			'Summarization failed',
+		);
+
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
 		const [historyResult, turnPrefixResult] = await Promise.all([
 			messagesToSummarize.length > 0
-				? generateSummary(
-						messagesToSummarize,
-						model,
-						settings.reserveTokens,
-						signal,
-						previousSummary,
-						observer,
-					)
+				? summarizeHistory()
 				: Promise.resolve({ text: 'No prior history.', usage: undefined }),
-			generateTurnPrefixSummary(
+			summarize(
+				'compaction_prefix',
 				turnPrefixMessages,
-				model,
-				settings.reserveTokens,
+				{ turnPrefix: true },
+				prefixTokens,
+				target,
 				signal,
 				observer,
+				'Turn prefix summarization failed',
 			),
 		]);
 		addCallUsage(historyResult.usage);
 		addCallUsage(turnPrefixResult.usage);
 		summary = `${historyResult.text}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
 	} else {
-		const historyResult = await generateSummary(
-			messagesToSummarize,
-			model,
-			settings.reserveTokens,
-			signal,
-			previousSummary,
-			observer,
-		);
+		const historyResult = await summarizeHistory();
 		addCallUsage(historyResult.usage);
 		summary = historyResult.text;
 	}
@@ -733,22 +589,30 @@ export async function compact(
 	};
 }
 /**
- * Context-overflow classification for an assistant message. Extends pi-ai's
- * pattern-based `isContextOverflow` with a structural check for the runtime's
- * own Workers-AI binding marker, so a binding 413 classifies without
- * depending on pi-ai's pattern list — or on its non-overflow precedence (a
- * 413 whose provider body happens to mention "rate limit" must still
- * classify as overflow).
+ * Co/**
+ * Context-overflow classification for an assistant message, with TanStack's
+ * `isContextOverflow`. A structural check for the runtime's own Workers AI
+ * binding marker comes first, so a binding 413 classifies without depending
+ * on the pattern list, or on its non-overflow precedence (a 413 whose
+ * provider body mentions "rate limit" must still classify as overflow).
  */
 export function isAssistantContextOverflow(
 	assistant: AssistantMessage,
 	contextWindow: number,
 ): boolean {
-	if (
-		assistant.stopReason === 'error' &&
-		assistant.errorMessage?.includes(WORKERS_AI_OVERFLOW_MARKER)
-	) {
+	const isError = assistant.stopReason === 'error';
+	if (isError && assistant.errorMessage?.includes(WORKERS_AI_OVERFLOW_MARKER)) {
 		return true;
 	}
-	return isContextOverflow(assistant, contextWindow);
+	return isContextOverflow({
+		...(isError ? { error: assistant.errorMessage } : {}),
+		// pi's count for the silent checks: input and cache reads, no cache writes.
+		usage: {
+			promptTokens: assistant.usage.input + assistant.usage.cacheRead,
+			completionTokens: assistant.usage.output,
+		},
+		finishReason: assistant.stopReason,
+		contextWindow,
+		provider: assistant.provider,
+	});
 }

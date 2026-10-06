@@ -1,5 +1,10 @@
 'use agent';
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai';
+import {
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxText,
+	fauxToolCall,
+} from '@flue/runtime/test-utils/faux';
 import { defineTool, setProvider, useModel, useTool } from '@flue/runtime';
 import * as v from 'valibot';
 import { bot } from '../chat.ts';

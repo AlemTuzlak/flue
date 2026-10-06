@@ -38,7 +38,7 @@ A model specifier is a plain string in `'provider-id/model-id'` format. Everythi
 - `openrouter/moonshotai/kimi-k2.6` — provider `openrouter`, model `moonshotai/kimi-k2.6`
 - `cloudflare/@cf/moonshotai/kimi-k2.6` — provider `cloudflare`, model `@cf/moonshotai/kimi-k2.6`
 
-Flue resolves specifiers against the providers registered with the runtime. By default that is the full built-in set from [Pi](https://pi.dev/docs/latest/providers), which ships the major providers — `anthropic`, `openai`, `google`, `amazon-bedrock`, `google-vertex`, `groq`, `mistral`, `xai`, `deepseek`, `cerebras`, `together`, `fireworks`, `openrouter`, and more. Each provider's catalog entries carry the model's wire protocol, endpoint, context-window size, output-token limit, cost rates, reasoning support, and accepted input modalities. That metadata decides when [compaction](#compaction) triggers, whether a [thinking level](#model-reasoning-effort) reaches the wire, and whether the model can accept images.
+Flue resolves specifiers against the providers registered with the runtime. By default that is the full built-in set. It has the major providers: `anthropic`, `openai`, `google`, `amazon-bedrock`, `google-vertex`, `groq`, `mistral`, `xai`, `deepseek`, `cerebras`, `together`, `fireworks`, `openrouter`, and more (see [Built-in providers](/docs/reference/provider-api/#built-in-providers)). Each provider's catalog records carry the model's wire protocol, endpoint, context-window size, output-token limit, cost rates, reasoning support, and accepted input modalities. That metadata decides when [compaction](#compaction) triggers, whether a [thinking level](#model-reasoning-effort) reaches the wire, and whether the model can accept images.
 
 To ship only the providers you actually use, list them in the `flue()` plugin config — the generated server entry then imports just those factories, and nothing else enters the build:
 
@@ -134,7 +134,7 @@ OPENAI_API_KEY="sk-..."
 GEMINI_API_KEY="..."
 ```
 
-`anthropic` reads `ANTHROPIC_API_KEY`, `openai` reads `OPENAI_API_KEY`, `google` reads `GEMINI_API_KEY`, `groq` reads `GROQ_API_KEY` — the pattern holds across providers (see [Pi's provider documentation](https://pi.dev/docs/latest/providers) for the full list). Both local entry points load the file for you, with shell-exported values always winning over file values:
+`anthropic` reads `ANTHROPIC_API_KEY`, `openai` reads `OPENAI_API_KEY`, `google` reads `GEMINI_API_KEY`, `groq` reads `GROQ_API_KEY`. The [Built-in providers](/docs/reference/provider-api/#built-in-providers) table has the variable of each provider. Both local entry points load the file for you, with shell-exported values always winning over file values:
 
 - [`flue run`](/docs/cli/run/) loads the project-root `.env`; pass `--env <path>` to select one alternate file.
 - `vite dev` loads Vite's standard file set: `.env`, `.env.local`, `.env.<mode>`, `.env.<mode>.local`.
@@ -152,20 +152,24 @@ When the environment-variable convention doesn't fit — a gateway with its own 
 
 ## Custom providers
 
-Providers are [Pi](https://pi.dev/docs/latest/providers)'s own objects, and Flue accepts them directly: build one with Pi's `createProvider()` (or any provider factory) and hand it to `setProvider()` at module top level in `app.ts`, before any agent runs. Since your code now imports Pi directly, add it to your project's dependencies: `npm install @earendil-works/pi-ai`. Registrations are keyed by the provider's `id`, and each call replaces that ID's previous provider — including a built-in, so overriding `anthropic` is just registering your own provider under that ID. One placement caveat: [`flue run`](/docs/cli/run/) loads only the agent module, never `app.ts` — when an agent must also work under `flue run`, put the registration in the agent module instead.
+Register a provider when you need an endpoint that the built-ins do not cover, or another credential. Build it with `createProvider()` from `@flue/runtime`, and pass it to `setProvider()` at module top level in `app.ts`, before any agent runs.
+
+Registrations are keyed by the provider's `id`. Each call replaces the previous provider of that ID, built-ins included. So to override `anthropic`, register your own provider under that ID.
+
+One placement rule: [`flue run`](/docs/cli/run/) loads only the agent module, never `app.ts`. If an agent must also work under `flue run`, put the registration in the agent module.
 
 Any OpenAI- or Anthropic-compatible endpoint works. Here's a local Ollama server:
 
 ```ts title="src/app.ts"
-import { createProvider, envApiKeyAuth } from '@earendil-works/pi-ai';
-import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
-import { setProvider } from '@flue/runtime';
+import { createProvider, setProvider } from '@flue/runtime';
 
 setProvider(
   createProvider({
     id: 'ollama',
     // Keyless local server; use envApiKeyAuth('...', ['MY_KEY']) for real keys.
-    auth: { apiKey: { name: 'Ollama (keyless)', resolve: async () => ({ auth: {} }) } },
+    auth: {
+      apiKey: { name: 'Ollama (keyless)', resolve: async () => ({ auth: {} }) },
+    },
     models: [
       {
         id: 'llama3.1:8b',
@@ -180,7 +184,6 @@ setProvider(
         maxTokens: 8192,
       },
     ],
-    api: openAICompletionsApi(),
   }),
 );
 ```
@@ -194,10 +197,8 @@ The provider declares its models, and the runtime trusts that metadata: `reasoni
 Routing a built-in provider through a gateway or proxy is the same move — register your own provider under the built-in's ID, reusing its catalog models with your endpoint and credential:
 
 ```ts title="src/app.ts"
-import { createProvider } from '@earendil-works/pi-ai';
-import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
-import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
-import { setProvider } from '@flue/runtime';
+import { createProvider, setProvider } from '@flue/runtime';
+import { anthropicProvider } from '@flue/runtime/providers/anthropic';
 
 setProvider(
   createProvider({
@@ -210,13 +211,15 @@ setProvider(
     },
     models: anthropicProvider()
       .getModels()
-      .map((model) => ({ ...model, baseUrl: 'https://gateway.example.com/anthropic' })),
-    api: anthropicMessagesApi(),
+      .map((model) => ({
+        ...model,
+        baseUrl: 'https://gateway.example.com/anthropic',
+      })),
   }),
 );
 ```
 
-The agents' specifiers (`anthropic/claude-sonnet-4-6`) don't change; cost, context-window, and capability metadata ride along from the catalog. Pi's provider protocol goes much further when you need it — OAuth, dynamic model discovery, custom wire protocols via the `api` field — all documented in [Pi's provider guide](https://pi.dev/docs/latest/providers#custom-providers). Flue's own contract is in the [Provider API reference](/docs/reference/provider-api/).
+The agents' specifiers (`anthropic/claude-sonnet-4-6`) do not change. Cost, context-window, and capability metadata come along from the catalog. For a wire protocol that the `api` values do not cover, give the provider a `createAdapter` function. The full contract is in the [Provider API reference](/docs/reference/provider-api/#createprovider).
 
 ## Cloudflare Workers AI (Cloudflare only)
 

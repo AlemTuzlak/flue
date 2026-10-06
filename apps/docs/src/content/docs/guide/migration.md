@@ -239,20 +239,40 @@ Hand-written channels build on the new `createChannelRouter(routes)` from `@flue
 
 ## Providers
 
-Flue's provider registration schema is gone; providers are now [Pi](https://pi.dev/docs/latest/providers)'s own objects, registered with `setProvider()`. `registerProvider()`, `registerApiProvider()`, `ProviderRegistrationError`, and the registration option bag are removed.
+Flue's provider registration schema is gone. A provider is a `Provider` object: build it with `createProvider()` from `@flue/runtime`, and register it with `setProvider()`. `registerProvider()`, `registerApiProvider()`, `ProviderRegistrationError`, and the registration option bag are removed.
 
-- `registerProvider('ollama', { api, baseUrl, ... })` — now `setProvider(createProvider({ id: 'ollama', auth, models, api }))` with Pi's `createProvider`. Models are declared as full `Model` objects (each carries its own `baseUrl` and metadata); there is no catalog hydration or zero-fill for custom providers. The [Ollama recipe](/docs/guide/models/#custom-providers) is the template.
-- `registerProvider('anthropic', { baseUrl, apiKey })` (patch a built-in) — now register your own provider under the built-in's ID, reusing its catalog models: `models: anthropicProvider().getModels().map((m) => ({ ...m, baseUrl }))`. The [gateway recipe](/docs/guide/models/#custom-providers) shows the full shape.
-- `apiKey` on a registration — now the provider's own `auth.apiKey.resolve()` (a fixed value, an env read via Pi's `envApiKeyAuth`, or a dynamic exchange). Environment-variable resolution for built-ins is unchanged.
-- `contextWindow`/`maxTokens`/`reasoning`/`input` and the per-model `models` map — now fields on the `Model` objects your provider declares.
-- `headers` — now `headers` on the `Model` objects, or returned from `auth.apiKey.resolve()`.
-- `storeResponses` — removed; no replacement. Open an issue if you relied on OpenAI-hosted item persistence.
-- `telemetry` overrides — removed; observability events report the fixed provider-ID normalization only.
-- `registerApiProvider({ api, stream, streamSimple })` — now pass the `{ stream, streamSimple }` pair as `createProvider()`'s `api` field; the global wire-protocol registry is gone.
-- `registerProvider('cloudflare', { api: 'cloudflare-ai-binding', binding, gateway })` — now `setProvider(cloudflareBindingProvider({ binding, gateway }))` from `@flue/runtime/cloudflare/workers-ai`. The generated Worker entry registers it when the `providers` config is omitted or lists `'cloudflare'`, and an `app.ts` registration still wins.
-- In tests, Pi's compat `registerFauxProvider(...)` — now `fauxProvider(...)` from `@earendil-works/pi-ai` plus `setProvider(faux.provider)`; there is no `.unregister()`.
+| Beta                                                                                 | Now                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `registerProvider('ollama', { api, baseUrl, ... })`                                  | `setProvider(createProvider({ id: 'ollama', auth, models }))`. Each model record has its own `api`, `baseUrl`, and metadata. The [Ollama recipe](/docs/guide/models/#custom-providers) is the template.                                                     |
+| `registerProvider('anthropic', { baseUrl, apiKey })` (patch a built-in)              | Register your own provider under the built-in's ID, with its catalog models: `models: anthropicProvider().getModels().map((m) => ({ ...m, baseUrl }))`. See the [gateway recipe](/docs/guide/models/#custom-providers).                                     |
+| `apiKey` on a registration                                                           | The provider's own `auth.apiKey.resolve()`: a fixed value, an environment read with `envApiKeyAuth()`, or a dynamic exchange. The environment variables of the built-ins are unchanged.                                                                     |
+| `contextWindow`, `maxTokens`, `reasoning`, `input`, and the per-model `models` map   | Fields of the model records that your provider declares. A custom provider gets no catalog data and no zero-fill.                                                                                                                                           |
+| `headers`                                                                            | `headers` on the model records, or from `auth.apiKey.resolve()`.                                                                                                                                                                                            |
+| `storeResponses`                                                                     | Removed, with no replacement. Open an issue if you relied on OpenAI-hosted item persistence.                                                                                                                                                                |
+| `telemetry` overrides                                                                | Removed. Observability events report the fixed provider-ID normalization only.                                                                                                                                                                              |
+| `registerApiProvider({ api, stream, streamSimple })`                                 | A `createAdapter` function on `createProvider()`, which returns a TanStack AI text adapter. There is no global wire-protocol registry.                                                                                                                      |
+| `registerProvider('cloudflare', { api: 'cloudflare-ai-binding', binding, gateway })` | `setProvider(cloudflareBindingProvider({ binding, gateway }))` from `@flue/runtime/cloudflare/workers-ai`. The generated Worker entry registers it when the `providers` config is omitted or lists `'cloudflare'`, and an `app.ts` registration still wins. |
+| `registerFauxProvider(...)` in tests                                                 | `fauxProvider(...)` from `@flue/runtime/test-utils/faux`, plus `setProvider(faux.provider)`. There is no `.unregister()`.                                                                                                                                   |
 
 New in the same release: the [`providers` config](/docs/reference/provider-api/#the-providers-config) on the `flue()` plugin selects which providers ship in the build (`flue({ providers: ['anthropic'] })`); omitted means all, as before. The list is exhaustive — on the Cloudflare target it includes the Workers AI binding provider, so name `'cloudflare'` when you use `cloudflare/...` models.
+
+### Apps that import pi
+
+Your app imports `@earendil-works/pi-ai` if it registers a custom provider or uses the faux provider in tests. Flue now runs on TanStack AI and has these exports itself. Change the imports:
+
+| Old import                                                                                                      | New import                                                                                            |
+| --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `createProvider`, `envApiKeyAuth` from `@earendil-works/pi-ai`                                                  | The same names from `@flue/runtime`                                                                   |
+| `<name>Provider` from `@earendil-works/pi-ai/providers/<id>`                                                    | The same name from `@flue/runtime/providers/<id>`                                                     |
+| `builtinProviders` from `@earendil-works/pi-ai/providers/all`                                                   | The same name from `@flue/runtime/providers/all`                                                      |
+| `fauxProvider`, `fauxAssistantMessage`, `fauxText`, `fauxThinking`, `fauxToolCall` from `@earendil-works/pi-ai` | The same names from `@flue/runtime/test-utils/faux`                                                   |
+| `openAICompletionsApi()` and the other `@earendil-works/pi-ai/api/*` exports                                    | None. Delete the `api` field of `createProvider()`: the `api` of each model record picks the adapter. |
+
+Then:
+
+1. Remove `@earendil-works/pi-ai` from your dependencies.
+2. If a provider used its own stream functions, move them into a `createAdapter` function (see [`createProvider()`](/docs/reference/provider-api/#createprovider)).
+3. If an agent uses `openai-codex`, `github-copilot`, or `radius`, move it to another provider. Flue does not ship these three providers, so their specifiers fail at model resolution.
 
 ## Observability
 
@@ -277,7 +297,9 @@ await client.agents.send('support-assistant', ticketId, { message });
 await client.agents.abort('support-assistant', ticketId);
 
 // Now
-const conversation = createFlueClient({ url: `/api/agents/support-assistant/${ticketId}` });
+const conversation = createFlueClient({
+  url: `/api/agents/support-assistant/${ticketId}`,
+});
 await conversation.send({ message, initialData });
 await conversation.abort();
 ```
@@ -339,7 +361,7 @@ flue run src/agents/support.ts --message "Handle ticket 42." --id ticket-42
 6. **Skills.** Delete import attributes; let `SKILL.md` imports package themselves; wrap other markdown with `defineSkill` where needed.
 7. **Workflows.** Replace each with the smallest fit: awaited `init()` handle, durable tool, or an application-owned orchestrator.
 8. **Channels and database.** Rename `conversationKey`/`parseConversationKey` to `instanceId`/`parseInstanceId`; rewrite database adapters around your own driver; move `db.ts` to the source root.
-9. **Providers.** Replace `registerProvider()`/`registerApiProvider()` calls with Pi's `createProvider()` + `setProvider()` (add `@earendil-works/pi-ai` to your dependencies); replace the Cloudflare binding registration with `cloudflareBindingProvider()` from `@flue/runtime/cloudflare/workers-ai`; optionally narrow the shipped providers with `flue({ providers: [...] })` (name `'cloudflare'` to keep Workers AI).
+9. **Providers.** Replace `registerProvider()` and `registerApiProvider()` calls with `createProvider()` and `setProvider()` from `@flue/runtime`. Replace the Cloudflare binding registration with `cloudflareBindingProvider()` from `@flue/runtime/cloudflare/workers-ai`. If you want, narrow the shipped providers with `flue({ providers: [...] })` (name `'cloudflare'` to keep Workers AI).
 10. **Observability.** Migrate `run_*` handling to `agent_start`/`agent_end`/`submission_settled` and the `instanceId`/`submissionId` correlation fields.
 11. **Clients.** Move SDK and React usage to conversation-scoped clients and `useFlueAgent({ url | client })`.
 12. **Deployment.** Append `deleted_classes` for `FlueRegistry` and workflow classes; add `new_sqlite_classes` for new agents; plan the drained deployment for the schema reset.

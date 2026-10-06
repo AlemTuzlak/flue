@@ -6,10 +6,11 @@
  * re-materialize it (regression: `rebuildCanonicalContext` once discarded it,
  * and the first real request went out with `systemPrompt: ""`).
  */
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai';
+
 import { expect, it } from 'vitest';
 import { init, instrument, useModel, usePersistentState, useSandbox } from './index.ts';
 import { local, sqlite, start } from './node/index.ts';
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from './test-utils/faux.ts';
 import type { FlueEvent, FlueObservation } from './types.ts';
 
 type TurnRequestEvent = Extract<FlueEvent, { type: 'turn_request' }>;
@@ -136,7 +137,10 @@ it('rerenders the prompt from state and delivers the new one on the next turn', 
 					parameters: { type: 'object', properties: {} },
 					async execute() {
 						setTurns(1);
-						return { details: {}, content: [{ type: 'text' as const, text: 'bumped' }] };
+						return {
+							details: {},
+							content: [{ type: 'text' as const, text: 'bumped' }],
+						};
 					},
 				},
 			],
@@ -188,7 +192,10 @@ it('rebuilds the prompt + tools after a canonical rebuild (tool-batch repair rec
 						return await new Promise<never>((_resolve, reject) => {
 							if (!signal) return reject(new Error('No abort signal'));
 							if (signal.aborted) reject(signal.reason);
-							else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+							else
+								signal.addEventListener('abort', () => reject(signal.reason), {
+									once: true,
+								});
 						});
 					},
 				},
@@ -216,7 +223,9 @@ it('rebuilds the prompt + tools after a canonical rebuild (tool-batch repair rec
 		const receipt = await agent.dispatch('Run the blocking tool.');
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		await agent.abort();
-		await expect(agent.read(receipt)).rejects.toMatchObject({ name: 'AgentRunError' });
+		await expect(agent.read(receipt)).rejects.toMatchObject({
+			name: 'AgentRunError',
+		});
 		await agent.read(await agent.dispatch('Continue.'));
 		const prompts = agentTurnPrompts(observations);
 		expect(prompts.at(-1)).not.toBe('');
@@ -240,8 +249,12 @@ it('keeps the configured prompt after an overflow compaction', async () => {
 	});
 	faux.setResponses([
 		fauxAssistantMessage([fauxText('First response.')], { stopReason: 'stop' }),
-		fauxAssistantMessage([fauxText('Completed response.')], { stopReason: 'stop' }),
-		fauxAssistantMessage([fauxText('Conversation summary.')], { stopReason: 'stop' }),
+		fauxAssistantMessage([fauxText('Completed response.')], {
+			stopReason: 'stop',
+		}),
+		fauxAssistantMessage([fauxText('Conversation summary.')], {
+			stopReason: 'stop',
+		}),
 	]);
 	const { observations, dispose } = recordingObservations();
 	const runtime = await start({

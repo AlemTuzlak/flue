@@ -3,10 +3,8 @@
  * over HTTP is mounted here explicitly — `app.ts` IS the routing table.
  * Runtime providers are registered here too.
  */
-import { createProvider } from '@earendil-works/pi-ai';
-import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
-import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
-import { setProvider } from '@flue/runtime';
+import { createProvider, setProvider } from '@flue/runtime';
+import { anthropicProvider } from '@flue/runtime/providers/anthropic';
 import { createAgentRouter } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 import { CompactionTest } from './agents/compaction-test.ts';
@@ -27,7 +25,7 @@ import { WithTools } from './agents/with-tools.ts';
 
 // Route a catalog provider through a gateway: register your own provider
 // under the built-in's ID, reusing its catalog models (cost, context window,
-// wire protocol ride along) with the gateway endpoint and credential.
+// and wire API ride along) with the gateway endpoint and credential.
 // (The from-scratch custom-provider demo lives in
 // `./agents/with-registered-provider.ts`, so it also works under
 // `flue run`, which never loads app.ts.)
@@ -39,13 +37,14 @@ if (process.env.ANTHROPIC_GATEWAY_URL) {
 			auth: {
 				apiKey: {
 					name: 'Anthropic gateway key',
-					resolve: async () => ({ auth: { apiKey: process.env.ANTHROPIC_API_KEY } }),
+					resolve: async () => ({
+						auth: { apiKey: process.env.ANTHROPIC_API_KEY },
+					}),
 				},
 			},
 			models: anthropicProvider()
 				.getModels()
 				.map((model) => ({ ...model, baseUrl: gatewayUrl })),
-			api: anthropicMessagesApi(),
 		}),
 	);
 }

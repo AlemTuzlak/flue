@@ -7,7 +7,12 @@
  * returns through the conversation like any other tool call. (Code that must
  * drive models declares `harness: true` and receives `ctx.harness`.)
  */
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai';
+import {
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxText,
+	fauxToolCall,
+} from '@flue/runtime/test-utils/faux';
 import { setProvider, useDataWriter, useModel, useTool } from '@flue/runtime';
 import * as v from 'valibot';
 

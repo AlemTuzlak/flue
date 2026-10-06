@@ -128,7 +128,9 @@ type DeliveredMessage =
 
 type DeliveredMessageInput = string | DeliveredMessage;
 
-type DeliveredAttachment = (PromptImage | PromptDocument) & { filename?: string };
+type DeliveredAttachment = (PromptImage | PromptDocument) & {
+  filename?: string;
+};
 
 interface PromptDocument {
   type: 'document';
@@ -330,16 +332,30 @@ The Node bootstrap for running Flue outside a generated server entry — standal
 - `agents` — the agents this runtime serves. Required, non-empty. Each entry is an agent function, or `{ agent, name }` when an identity override is needed (inline or anonymous functions in tests). Identity resolves from the entry's `name`, else the agent's own identity (`agentName` static, else function name) — never positionally, so reordering the array cannot reassign conversations. An anonymous function with no `agentName` and no `name` throws.
 - `db` — persistence. Defaults to in-memory SQLite (process lifetime — nothing survives exit). Pass an adapter, such as [`sqlite('./run.db')`](/docs/guide/node-target/#sqlite) from `@flue/runtime/node`, to persist conversations across runs. See [Data Persistence API](/docs/reference/data-persistence-api/) for the adapter contract.
 - `env` — the runtime environment (provider credentials and other bindings). Defaults to `process.env`.
-- `providers` — the [Pi providers](/docs/reference/provider-api/) this runtime registers, replacing the default set. Omitted registers every Pi built-in, the same as `flue run`; an empty array registers none. Pass built-in factories, `createProvider(...)` customs, or a faux provider's `.provider` in tests:
+- `providers`: the [providers](/docs/reference/provider-api/) that this runtime registers, in place of the default set. Omitted, every built-in provider registers, the same as `flue run`. An empty array registers none. Pass built-in factories, `createProvider(...)` providers, or a faux provider's `.provider` in tests:
 
   ```ts
-  import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
+  import { anthropicProvider } from '@flue/runtime/providers/anthropic';
 
   await start({
     agents: [Reporter],
     providers: [anthropicProvider()], // only anthropic/* specifiers resolve
   });
   ```
+
+  For tests with no network, use the faux provider from `@flue/runtime/test-utils/faux`. Each model call gets the next scripted answer:
+
+  ```ts
+  import { fauxAssistantMessage, fauxProvider, fauxText } from '@flue/runtime/test-utils/faux';
+
+  const faux = fauxProvider({ models: [{ id: 'model' }] });
+  faux.setResponses([fauxAssistantMessage([fauxText('Report ready.')])]);
+
+  await start({ agents: [Reporter], providers: [faux.provider] });
+  // The agent declares useModel('faux/model').
+  ```
+
+  `faux.state.callCount` counts the model calls. A call with no scripted answer left fails with `No more faux responses queued`.
 
   Omitted, the default registration skips any ID already registered, so a `setProvider()` call made before `start()` overrides a same-ID built-in regardless of ordering. Given explicitly, `providers` registers unconditionally — an entry here overwrites a same-ID provider set before `start()`, since `setProvider()` always replaces on ID.
 
@@ -426,7 +442,7 @@ interface PromptOptions<S extends v.GenericSchema | undefined = undefined> {
 - `model` — model specifier override (`'provider-id/model-id'`) for this operation. Defaults to the agent's `useModel` declaration.
 - `thinkingLevel` — reasoning-effort override for this call. See [`ThinkingLevel`](/docs/reference/agent-hooks-api/#usemodel).
 - `signal` — external abort signal, merged with the handle's own.
-- `images` — inline images attached to the operation's user message (`PromptImage` re-exports pi-ai's `ImageContent`: `{ type: 'image', data, mimeType }`). Requires a vision-capable model.
+- `images`: inline images attached to the operation's user message (`PromptImage` is `{ type: 'image', data, mimeType }`, with `data` base64). Requires a vision-capable model.
 - `documents` — inline documents attached to the operation's user message: `{ type: 'document', data, mimeType: 'application/pdf' }`, with `data` base64. Forwarded as native document content, like a document [`DeliveredAttachment`](#deliveredmessage). Native document input is supported on Anthropic Messages, Google Generative AI / Vertex, and OpenAI (and Azure OpenAI) Responses models; on any other model API the document is replaced in model context with a text placeholder saying it was omitted (and the runtime logs a one-time warning per API). An unsupported `mimeType` throws.
 
 ```ts

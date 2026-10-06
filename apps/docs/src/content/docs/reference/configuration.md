@@ -121,11 +121,11 @@ A glob narrowing the [`'use agent'` scan](/docs/guide/building-agents/#use-agent
 
 ### `providers`
 
-The providers registered at server start, by provider ID (for example `['anthropic', 'openai']`). Each entry becomes a `@earendil-works/pi-ai/providers/<id>` factory import in the generated entry — `'cloudflare'` selects Flue's own Workers AI binding provider instead — so only the listed providers ship in the build.
+The providers registered at server start, by provider ID (for example `['anthropic', 'openai']`). Each entry becomes an import of `@flue/runtime/providers/<id>` in the generated entry. The exception is `'cloudflare'`, which selects Flue's own Workers AI binding provider. Only the listed providers ship in the build.
 
 - Default: unset — every built-in provider registers, the Workers AI binding provider included on the Cloudflare target.
 - The list is exhaustive: on the Cloudflare target, `cloudflare/...` models require `'cloudflare'` in the list. On the Node target, `'cloudflare'` is a config error — the Workers AI binding only exists on Workers.
-- Entries are validated as lowercase alphanumerics and dashes; an ID Pi doesn't ship fails the build with the unresolvable import path.
+- Entries are validated as lowercase alphanumerics and dashes. An ID that Flue does not ship fails the build, and the error names the import path that does not resolve.
 - Custom providers registered with `setProvider()` in `app.ts` are unaffected, and a user registration always wins over a listed provider with the same ID.
 - `flue run` ignores `providers`; it always registers the full built-in set.
 

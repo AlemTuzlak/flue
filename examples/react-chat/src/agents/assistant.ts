@@ -1,5 +1,5 @@
 'use agent';
-import { fauxAssistantMessage, fauxProvider, fauxText } from '@earendil-works/pi-ai';
+import { fauxAssistantMessage, fauxProvider, fauxText } from '@flue/runtime/test-utils/faux';
 import { setProvider, useModel } from '@flue/runtime';
 
 // The 'use agent' directive registers this module's exported agent functions

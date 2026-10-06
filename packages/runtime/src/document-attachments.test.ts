@@ -1,96 +1,104 @@
-import type { Api, Context, Model, SimpleStreamOptions } from '@earendil-works/pi-ai';
-import { fauxAssistantMessage, fauxProvider, fauxText } from '@earendil-works/pi-ai';
-import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
-import { bedrockConverseStreamApi } from '@earendil-works/pi-ai/api/bedrock-converse-stream.lazy';
-import { googleGenerativeAIApi } from '@earendil-works/pi-ai/api/google-generative-ai.lazy';
-import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
-import { describe, expect, it } from 'vitest';
+import { chat } from '@tanstack/ai';
+import { getModels, getProviders } from '@tanstack/ai-models';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	type DocumentContextBlock,
 	documentOmittedPlaceholder,
 	mergeOperationAttachments,
-	prepareDocumentRequest,
 	toPublicAttachment,
 } from './document-attachments.ts';
 import { init, useModel } from './index.ts';
+import type { AgentMessage } from './llm-types.ts';
+import { modelInfo, toModelRequest } from './model-messages.ts';
 import { sqlite, start } from './node/index.ts';
+import { createModelAdapter } from './providers/adapters.ts';
+import { builtinProvider } from './providers/builtins.ts';
 import { parseDeliveredMessage } from './runtime/schemas.ts';
+import {
+	type FauxContext,
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxText,
+} from './test-utils/faux.ts';
 
 const PDF = 'JVBERi0xLjQK';
 const PNG = 'iVBORw0KGgo=';
 
-function model(api: string, provider: string, id: string): Model<Api> {
-	return {
-		id,
-		name: id,
-		api,
-		provider,
-		baseUrl: 'http://127.0.0.1:1',
-		reasoning: false,
-		input: ['text', 'image'],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 100_000,
-		maxTokens: 1_000,
-	} as Model<Api>;
-}
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
 
-function documentContext(): Context {
-	return {
-		systemPrompt: 'system',
-		messages: [
-			{
-				role: 'user',
-				timestamp: 0,
-				content: [
-					{ type: 'text', text: 'Summarize this quote.' },
-					{ type: 'image', data: PNG, mimeType: 'image/png' },
-					{
-						type: 'image',
-						data: PDF,
-						mimeType: 'application/pdf',
-						filename: 'quote.pdf',
-					} as never,
-				],
-			},
-		],
-	};
-}
+const quotePdf: DocumentContextBlock = {
+	type: 'image',
+	data: PDF,
+	mimeType: 'application/pdf',
+	filename: 'quote.pdf',
+};
 
-class PayloadCaptured extends Error {}
-
-/**
- * Drive a real pi-ai API implementation up to the point where it would send
- * the request, and return the provider payload after Flue's rewrite. Pins the
- * pi payload shapes the rewrite depends on: a pi bump that changes them fails
- * here instead of silently sending image-typed PDFs.
- */
-async function capturePayload(
-	api: { stream: (m: Model<Api>, c: Context, o?: SimpleStreamOptions) => AsyncIterable<unknown> },
-	target: Model<Api>,
-	context: Context,
-): Promise<Record<string, unknown>> {
-	let captured: Record<string, unknown> | undefined;
-	const prepared = prepareDocumentRequest(target, context, {
-		apiKey: 'test-key',
-		onPayload: (payload) => {
-			captured = payload as Record<string, unknown>;
-			throw new PayloadCaptured();
+function documentMessages(): AgentMessage[] {
+	return [
+		{
+			role: 'user',
+			timestamp: 0,
+			content: [
+				{ type: 'text', text: 'Summarize this quote.' },
+				{ type: 'image', data: PNG, mimeType: 'image/png' },
+				quotePdf,
+			],
 		},
-	});
-	for await (const event of api.stream(target, prepared.context, prepared.options)) {
-		if ((event as { type?: string }).type === 'error') break;
-	}
-	if (!captured) throw new Error('provider payload was not captured');
-	return captured;
+	];
 }
 
-describe('provider payload rewrite', () => {
+function catalogModel(providerId: string, modelId: string) {
+	const record = getProviders().find((provider) => provider.id === providerId);
+	if (!record) throw new Error(`No provider "${providerId}".`);
+	const provider = builtinProvider({
+		provider: record,
+		models: getModels(providerId),
+	});
+	const model = provider.getModels().find((entry) => entry.id === modelId);
+	if (!model) throw new Error(`No model "${providerId}/${modelId}".`);
+	return { provider, model };
+}
+
+/** The JSON body that the provider adapter sends for `messages`, read at the `fetch` boundary. */
+async function sentBody(providerId: string, modelId: string) {
+	const bodies: Record<string, unknown>[] = [];
+	vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+		bodies.push(JSON.parse(await new Request(input, init).text()));
+		return Response.json({ error: { message: 'test stop' } }, { status: 400 });
+	});
+	const { provider, model } = catalogModel(providerId, modelId);
+	const request = toModelRequest(
+		{ systemPrompt: 'system', messages: documentMessages(), tools: [] },
+		modelInfo(model),
+	);
+	const adapter = createModelAdapter(provider, model, {
+		auth: { auth: { apiKey: 'test-key' } },
+		promptCacheKey: 'conv-1',
+	});
+	try {
+		for await (const _chunk of chat({
+			adapter,
+			messages: request.messages,
+			systemPrompts: request.systemPrompts,
+		})) {
+			// Drain the stream.
+		}
+	} catch {
+		// The stub answers 400.
+	}
+	const [body] = bodies;
+	if (!body) throw new Error('The adapter sent no request.');
+	return body;
+}
+
+describe('provider requests', () => {
 	it('sends documents to Anthropic as native document blocks', async () => {
-		const payload = await capturePayload(
-			anthropicMessagesApi() as never,
-			model('anthropic-messages', 'anthropic', 'claude-test'),
-			documentContext(),
-		);
-		const [message] = payload.messages as Array<{ content: Array<Record<string, unknown>> }>;
+		const body = await sentBody('anthropic', 'claude-sonnet-4-5');
+		const [message] = body.messages as Array<{
+			content: Array<Record<string, unknown>>;
+		}>;
 		expect(message?.content[1]).toMatchObject({
 			type: 'image',
 			source: { type: 'base64', media_type: 'image/png', data: PNG },
@@ -103,69 +111,71 @@ describe('provider payload rewrite', () => {
 	});
 
 	it('sends documents to OpenAI Responses as input_file parts', async () => {
-		const payload = await capturePayload(
-			openAIResponsesApi() as never,
-			model('openai-responses', 'openai', 'gpt-test'),
-			documentContext(),
-		);
-		const user = (payload.input as Array<Record<string, unknown>>).find(
+		const body = await sentBody('openai', 'gpt-5');
+		const user = (body.input as Array<{ role?: string; content?: unknown }>).find(
 			(item) => item.role === 'user',
-		) as { content: Array<Record<string, unknown>> };
-		expect(user.content[1]).toMatchObject({ type: 'input_image' });
-		expect(user.content[2]).toEqual({
+		);
+		const content = user?.content as Array<Record<string, unknown>>;
+		expect(content[1]).toMatchObject({ type: 'input_image' });
+		expect(content[2]).toEqual({
 			type: 'input_file',
 			filename: 'quote.pdf',
 			file_data: `data:application/pdf;base64,${PDF}`,
 		});
 	});
 
-	it('leaves Google inlineData untouched (already native)', async () => {
-		const payload = await capturePayload(
-			googleGenerativeAIApi() as never,
-			model('google-generative-ai', 'google', 'gemini-test'),
-			documentContext(),
-		);
-		const [content] = payload.contents as Array<{ parts: Array<Record<string, unknown>> }>;
-		expect(content?.parts[2]).toEqual({ inlineData: { mimeType: 'application/pdf', data: PDF } });
+	it('sends documents to Google as inlineData', async () => {
+		const body = await sentBody('google', 'gemini-2.5-flash');
+		const [content] = body.contents as Array<{
+			parts: Array<Record<string, unknown>>;
+		}>;
+		expect(content?.parts[2]).toEqual({
+			inlineData: { mimeType: 'application/pdf', data: PDF },
+		});
 	});
 
-	it('replaces documents with a placeholder for unsupported APIs', async () => {
-		const target = model('bedrock-converse-stream', 'amazon-bedrock', 'anthropic.claude-test');
-		const prepared = prepareDocumentRequest(target, documentContext(), undefined);
-		const [message] = prepared.context.messages;
+	it('replaces documents with a placeholder for unsupported APIs', () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { model } = catalogModel('amazon-bedrock', 'amazon.nova-2-lite-v1:0');
+		const [message] = toModelRequest(
+			{ systemPrompt: 'system', messages: documentMessages(), tools: [] },
+			modelInfo(model),
+		).messages;
 		expect(message?.content).toEqual([
-			{ type: 'text', text: 'Summarize this quote.' },
-			{ type: 'image', data: PNG, mimeType: 'image/png' },
-			{ type: 'text', text: documentOmittedPlaceholder('bedrock-converse-stream', 'quote.pdf') },
+			{ type: 'text', content: 'Summarize this quote.' },
+			{
+				type: 'image',
+				source: { type: 'data', value: PNG, mimeType: 'image/png' },
+			},
+			{
+				type: 'text',
+				content: documentOmittedPlaceholder('bedrock-converse-stream', 'quote.pdf'),
+			},
 		]);
-		// Bedrock throws on a non-image ImageContent; the placeholder keeps the
-		// request buildable.
-		const payload = await capturePayload(
-			bedrockConverseStreamApi() as never,
-			target,
-			documentContext(),
-		).catch((error: unknown) => error);
-		expect(payload).not.toBeInstanceOf(Error);
 	});
 
-	it('is a no-op without documents', () => {
-		const context: Context = {
-			messages: [
-				{
-					role: 'user',
-					timestamp: 0,
-					content: [{ type: 'image', data: PNG, mimeType: 'image/png' }],
-				},
-			],
-		};
-		const options = { apiKey: 'k' };
-		const prepared = prepareDocumentRequest(
-			model('anthropic-messages', 'anthropic', 'claude-test'),
-			context,
-			options,
-		);
-		expect(prepared.context).toBe(context);
-		expect(prepared.options).toBe(options);
+	it('leaves images as they are without documents', () => {
+		const { model } = catalogModel('anthropic', 'claude-sonnet-4-5');
+		const [message] = toModelRequest(
+			{
+				systemPrompt: '',
+				messages: [
+					{
+						role: 'user',
+						timestamp: 0,
+						content: [{ type: 'image', data: PNG, mimeType: 'image/png' }],
+					},
+				],
+				tools: [],
+			},
+			modelInfo(model),
+		).messages;
+		expect(message?.content).toEqual([
+			{
+				type: 'image',
+				source: { type: 'data', value: PNG, mimeType: 'image/png' },
+			},
+		]);
 	});
 });
 
@@ -213,7 +223,12 @@ describe('attachment shapes', () => {
 				body: 'hi',
 				attachments: [
 					{ type: 'image', data: PNG, mimeType: 'image/png' },
-					{ type: 'document', data: PDF, mimeType: 'application/pdf', filename: 'quote.pdf' },
+					{
+						type: 'document',
+						data: PDF,
+						mimeType: 'application/pdf',
+						filename: 'quote.pdf',
+					},
 				],
 			}),
 		).toMatchObject({ attachments: [{ type: 'image' }, { type: 'document' }] });
@@ -226,12 +241,17 @@ describe('end to end', () => {
 			useModel('faux/model', { compaction: false });
 			return 'Reply to the user.';
 		}
-		const faux = fauxProvider({ api, models: [{ id: 'model', input: ['text', 'image'] }] });
-		const seen: Array<{ context: Context; options: SimpleStreamOptions | undefined }> = [];
+		const faux = fauxProvider({
+			api,
+			models: [{ id: 'model', input: ['text', 'image'] }],
+		});
+		const seen: FauxContext[] = [];
 		faux.setResponses([
-			(context, options) => {
-				seen.push({ context, options: options as SimpleStreamOptions | undefined });
-				return fauxAssistantMessage([fauxText('Summarized.')], { stopReason: 'stop' });
+			(context) => {
+				seen.push(context);
+				return fauxAssistantMessage([fauxText('Summarized.')], {
+					stopReason: 'stop',
+				});
 			},
 		]);
 		const runtime = await start({
@@ -249,7 +269,12 @@ describe('end to end', () => {
 							kind: 'user',
 							body: 'Summarize this quote.',
 							attachments: [
-								{ type: 'document', data: PDF, mimeType: 'application/pdf', filename: 'quote.pdf' },
+								{
+									type: 'document',
+									data: PDF,
+									mimeType: 'application/pdf',
+									filename: 'quote.pdf',
+								},
 							],
 						},
 					}),
@@ -259,48 +284,26 @@ describe('end to end', () => {
 			await agent.abort();
 			await runtime.stop();
 		}
-		const request = seen[0];
+		const [request] = seen;
 		if (!request) throw new Error('model was not called');
-		const user = request.context.messages.find((message) => message.role === 'user');
-		if (!user || !Array.isArray(user.content)) throw new Error('user message missing');
-		return { request, content: user.content };
+		const user = request.messages.find((message) => message.role === 'user');
+		if (user?.role !== 'user' || !Array.isArray(user.content))
+			throw new Error('user message missing');
+		return user.content;
 	}
 
-	it('persists a delivered document and forwards it with a native rewrite', async () => {
-		const { request, content } = await runWithDocument('anthropic-messages');
+	it('persists a delivered document and forwards it as a native document', async () => {
+		const content = await runWithDocument('anthropic-messages');
 		const text = content.find((block) => block.type === 'text');
 		expect(text?.type === 'text' && text.text).toMatch(
 			/<document id="[^"]+" mimeType="application\/pdf" filename="quote\.pdf" \/>/,
 		);
-		expect(content).toContainEqual({
-			type: 'image',
-			data: PDF,
-			mimeType: 'application/pdf',
-			filename: 'quote.pdf',
-		});
-		const rewritten = await request.options?.onPayload?.(
-			{
-				messages: [
-					{
-						role: 'user',
-						content: [
-							{
-								type: 'image',
-								source: { type: 'base64', media_type: 'application/pdf', data: PDF },
-							},
-						],
-					},
-				],
-			},
-			model('anthropic-messages', 'anthropic', 'claude-test'),
-		);
-		expect(rewritten).toMatchObject({
-			messages: [{ content: [{ type: 'document', title: 'quote.pdf' }] }],
-		});
+		expect(content).toContainEqual(quotePdf);
 	});
 
 	it('replaces a delivered document with a placeholder on an unsupported API', async () => {
-		const { content } = await runWithDocument('faux');
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const content = await runWithDocument('faux');
 		expect(content).toContainEqual({
 			type: 'text',
 			text: documentOmittedPlaceholder('faux', 'quote.pdf'),

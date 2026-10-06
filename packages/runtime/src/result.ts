@@ -1,4 +1,4 @@
-import type { AgentTool } from '@earendil-works/pi-agent-core';
+import type { AgentTool } from './llm-types.ts';
 import type * as v from 'valibot';
 import { formatPackagedSkillFilePath, READ_SKILL_RESOURCE_TOOL_NAME } from './agent.ts';
 import { decodeBase64 } from './base64.ts';
@@ -77,7 +77,10 @@ export function buildWorkspaceSkillPrompt(
 	skillMdPath: string,
 	raw: string,
 ): string {
-	const skill = parseSkillMarkdown(raw, { directoryName: name, path: skillMdPath });
+	const skill = parseSkillMarkdown(raw, {
+		directoryName: name,
+		path: skillMdPath,
+	});
 	return [
 		`Run the skill named "${name}".`,
 		'',

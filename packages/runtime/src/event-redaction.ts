@@ -1,4 +1,4 @@
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { AgentMessage } from './llm-types.ts';
 import type { FlueEventInput, FlueObservationDetail } from './types.ts';
 
 /**

@@ -1,10 +1,3 @@
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type {
-	AssistantMessage,
-	JsonObject,
-	ToolResultMessage,
-	UserMessage,
-} from '@earendil-works/pi-ai';
 import {
 	type AssistantMessageStartedRecord,
 	type AttachmentRef,
@@ -14,10 +7,18 @@ import {
 	type CompactionRecord,
 	type ConversationRecord,
 	encodeCanonicalId,
+	flueRecordsOf,
 } from './conversation-records.ts';
 import { isDocumentMimeType } from './document-attachments.ts';
 import { AttachmentNotAvailableError, ConversationRecordInvariantError } from './errors.ts';
 import { fnv1a64 } from './fnv.ts';
+import type {
+	AgentMessage,
+	AssistantMessage,
+	JsonObject,
+	ToolResultMessage,
+	UserMessage,
+} from './llm-types.ts';
 import { deepMergeMetadata } from './message-output.ts';
 import { createUserContextMessage, renderSignalMessage } from './message-rendering.ts';
 import type { ResourceSnapshot } from './resources.ts';
@@ -313,7 +314,10 @@ export interface ReducedInstanceState {
 }
 
 export interface ConversationProjectionOptions {
-	resolveAttachment?: (attachment: AttachmentRef) => { data: string; mimeType: string };
+	resolveAttachment?: (attachment: AttachmentRef) => {
+		data: string;
+		mimeType: string;
+	};
 }
 
 export interface ReducedContextEntry {
@@ -337,7 +341,7 @@ export interface ReducedContextEntry {
  * against from-scratch folds at every batch boundary, so shape drift without
  * a matching codec change fails CI.
  */
-export const REDUCED_STATE_FORMAT = 3;
+export const REDUCED_STATE_FORMAT = 4;
 
 export function createReducedInstanceState(): ReducedInstanceState {
 	return {
@@ -449,6 +453,12 @@ export function applyConversationRecord(
 	state: ReducedInstanceState,
 	record: ConversationRecord,
 ): void {
+	if (record.type === 'harness_log_batch') {
+		// A harness batch is a log position, not a conversation record: its Flue
+		// records apply in order, and the batch leaves no index entry of its own.
+		for (const inner of flueRecordsOf([record])) applyConversationRecord(state, inner);
+		return;
+	}
 	const accepted = state.recordsById.get(record.id);
 	if (accepted) {
 		// A stub compares by the digest of the record's canonical JSON — the
@@ -867,7 +877,9 @@ export function applyConversationRecord(
 			for (const recordId of conversation.attemptScopedRecordIds.get(record.submissionId) ?? []) {
 				const retained = state.recordsById.get(recordId);
 				if (retained && !isConversationRecordStub(retained)) {
-					state.recordsById.set(recordId, { h: fnv1a64(JSON.stringify(retained)) });
+					state.recordsById.set(recordId, {
+						h: fnv1a64(JSON.stringify(retained)),
+					});
 				}
 			}
 			conversation.attemptScopedRecordIds.delete(record.submissionId);

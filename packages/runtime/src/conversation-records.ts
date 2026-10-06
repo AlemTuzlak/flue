@@ -1,4 +1,4 @@
-import type { AssistantMessage, ToolResultMessage } from '@earendil-works/pi-ai';
+import type { AssistantMessage, ToolResultMessage } from './llm-types.ts';
 import type { ResourceSnapshot } from './resources.ts';
 import { generateEntryId, generateRecordId } from './runtime/ids.ts';
 import type { PromptUsage } from './types.ts';
@@ -438,7 +438,26 @@ interface ResourceSnapshotRecord extends ConversationRecordEnvelope {
 	snapshot: ResourceSnapshot;
 }
 
+/** One record of the TanStack harness log: harness records and Flue host records. */
+export interface HarnessLogRecord {
+	type: string;
+	[key: string]: unknown;
+}
+
+/**
+ * One append of the TanStack harness log, stored as one Flue batch. Its
+ * records are at log positions `seq`, `seq + 1`, and so on. It is a record of
+ * the whole log, not of one conversation: `conversationId`, `harness`, and
+ * `session` are empty, and readers unwrap `records` instead.
+ */
+export interface HarnessLogBatchRecord extends ConversationRecordEnvelope {
+	type: 'harness_log_batch';
+	seq: number;
+	records: HarnessLogRecord[];
+}
+
 export type ConversationRecord =
+	| HarnessLogBatchRecord
 	| ConversationCreatedRecord
 	| UserMessageRecord
 	| SignalRecord
@@ -463,6 +482,67 @@ export type ConversationRecord =
 	| MessageMetadataRecord
 	| ToolStepSettledRecord
 	| ResourceSnapshotRecord;
+
+/** Flue's own record types. The compiler checks that the list is complete. */
+const FLUE_RECORD_TYPES: Record<Exclude<ConversationRecord['type'], 'harness_log_batch'>, true> = {
+	conversation_created: true,
+	user_message: true,
+	signal: true,
+	assistant_message_started: true,
+	assistant_text_started: true,
+	assistant_text_delta: true,
+	assistant_text_completed: true,
+	assistant_reasoning_started: true,
+	assistant_reasoning_delta: true,
+	assistant_reasoning_completed: true,
+	assistant_tool_call: true,
+	assistant_message_completed: true,
+	tool_outcome: true,
+	tool_results_committed: true,
+	compaction: true,
+	child_session_retained: true,
+	submission_settled: true,
+	state_write: true,
+	agent_start_run: true,
+	agent_finish_cycle: true,
+	message_data_write: true,
+	message_metadata: true,
+	tool_step_settled: true,
+	resource_snapshot: true,
+};
+
+/** A Flue record read back from a harness batch. The log store already parsed it from JSON. */
+function isFlueRecord(record: object): record is ConversationRecord {
+	return (
+		'v' in record &&
+		record.v === 1 &&
+		'id' in record &&
+		typeof record.id === 'string' &&
+		'type' in record &&
+		typeof record.type === 'string' &&
+		Object.hasOwn(FLUE_RECORD_TYPES, record.type)
+	);
+}
+
+/**
+ * The Flue records of a batch, in order. A harness batch gives the Flue
+ * records it carries, without the harness's `thread` field, and leaves out
+ * its `harness.*` records and other host records. Any other batch is already
+ * Flue records.
+ */
+export function flueRecordsOf(records: readonly ConversationRecord[]) {
+	const flueRecords: ConversationRecord[] = [];
+	for (const record of records) {
+		if (record.type !== 'harness_log_batch') {
+			flueRecords.push(record);
+			continue;
+		}
+		for (const { thread: _thread, ...inner } of record.records) {
+			if (isFlueRecord(inner)) flueRecords.push(inner);
+		}
+	}
+	return flueRecords;
+}
 
 export function generateConversationRecordId(): string {
 	return generateRecordId();

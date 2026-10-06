@@ -160,7 +160,11 @@ export function createLocalAgentRun(options: LocalAgentRunOptions): LocalAgentRu
 		const importTrace = createImportTrace({ enabled: () => true });
 		viteServer = await createRunModuleServer(project.root, importTrace);
 		const server = viteServer;
-		const loadContext: RunModuleLoadContext = { cwd, root: project.root, importTrace };
+		const loadContext: RunModuleLoadContext = {
+			cwd,
+			root: project.root,
+			importTrace,
+		};
 
 		const restoreConsole = redirectStdoutConsole(options.onRuntimeOutput);
 		try {
@@ -291,9 +295,8 @@ interface ViteDevServerLike {
  * Non-listening module server: middleware mode with hmr disabled binds no
  * port and starts no websocket. The dependency resolver keeps exactly ONE
  * copy of `@flue/runtime` in the graph (externalized to the project's
- * install); `@earendil-works/pi-ai` is forced external for the same
- * module-scoped-registry reason (Vite would otherwise inline a symlinked
- * copy, splitting the provider registry the runtime shares with it).
+ * install), so the provider registry the built-in provider modules share
+ * with the runtime is never split.
  */
 async function createRunModuleServer(
 	root: string,
@@ -307,7 +310,6 @@ async function createRunModuleServer(
 		logLevel: 'silent',
 		resolve: { preserveSymlinks: true },
 		optimizeDeps: { noDiscovery: true, include: [] },
-		ssr: { external: ['@earendil-works/pi-ai'] },
 		server: {
 			middlewareMode: true,
 			hmr: false,

@@ -81,7 +81,7 @@ Recovery does not replay provider or tool execution. Stored stream chunks create
 
 ## Streaming limitation
 
-Pi does not expose authoritative raw provider stream-item timing. Flue therefore omits time-to-first-chunk and time-per-output-chunk metrics instead of deriving inaccurate values from semantic text/reasoning deltas or recovered chunks.
+Flue runs model calls through TanStack AI, which streams normalized events, not the raw stream items of the provider. So Flue omits the time-to-first-chunk and time-per-output-chunk metrics. Values derived from text deltas, reasoning deltas, or recovered chunks would not be accurate.
 
 ## Unsupported operations
 

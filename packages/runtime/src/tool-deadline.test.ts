@@ -1,10 +1,10 @@
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai';
 import { expect, it } from 'vitest';
 import type { PersistenceAdapter } from './agent-execution-store.ts';
 import type { ConversationRecord } from './conversation-records.ts';
 import { init, instrument, useModel, useTool } from './index.ts';
 import { sqlite, start } from './node/index.ts';
 import type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from './test-utils/faux.ts';
 
 function recordingDatabase() {
 	const database = sqlite();
@@ -42,7 +42,10 @@ function recordingDatabase() {
 function hangUntilSignal(signal: AbortSignal | undefined): Promise<string> {
 	return new Promise((_resolve, reject) => {
 		if (signal?.aborted) reject(signal.reason);
-		else signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+		else
+			signal?.addEventListener('abort', () => reject(signal.reason), {
+				once: true,
+			});
 	});
 }
 
@@ -63,7 +66,9 @@ it('settles a tool that exceeds its timeoutMs with a distinguishable error and c
 		fauxAssistantMessage([fauxToolCall('hung', {}, { id: 'call_hung' })], {
 			stopReason: 'toolUse',
 		}),
-		fauxAssistantMessage([fauxText('Continuing after the timeout.')], { stopReason: 'stop' }),
+		fauxAssistantMessage([fauxText('Continuing after the timeout.')], {
+			stopReason: 'stop',
+		}),
 	]);
 	const database = recordingDatabase();
 	const disposeInstrumentation = instrument({

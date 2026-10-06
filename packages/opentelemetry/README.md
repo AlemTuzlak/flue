@@ -85,7 +85,7 @@ A restarted execution cannot keep an in-memory span open. Recovery does not repl
 
 ## Current limitation
 
-Pi does not currently expose authoritative raw provider stream-item lifecycle callbacks. Flue therefore does not emit `gen_ai.client.operation.time_to_first_chunk` or `gen_ai.client.operation.time_per_output_chunk`; semantic text/reasoning deltas and recovered chunks are not valid substitutes.
+Flue runs model calls through TanStack AI, which streams normalized events, not the raw stream items of the provider. So Flue does not emit `gen_ai.client.operation.time_to_first_chunk` or `gen_ai.client.operation.time_per_output_chunk`. Text deltas, reasoning deltas, and recovered chunks are not valid substitutes.
 
 ## Breaking migration
 

@@ -38,10 +38,9 @@
  * it conservatively repairs and lets the model proceed.
  */
 
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { isAssistantContextOverflow } from './compaction.ts';
 import { RETRYABLE_INTERRUPTION_MARKER } from './errors.ts';
+import type { AgentMessage, AssistantMessage } from './llm-types.ts';
 
 export type CanonicalSubmissionEntry =
 	| {
@@ -229,7 +228,12 @@ export function classifySubmissionState(
 			// batch, so driving another model turn here would diverge from the
 			// no-crash outcome.
 			if (isTerminalTrailingToolBatch(following, assistantIndex, assistant)) {
-				return { kind: 'completed', assistant, overflow, terminalToolBatch: true };
+				return {
+					kind: 'completed',
+					assistant,
+					overflow,
+					terminalToolBatch: true,
+				};
 			}
 			return {
 				kind: 'resume',
@@ -297,7 +301,10 @@ export function classifySubmissionState(
 		};
 	}
 	// stopReason 'error', non-retryable and non-overflow.
-	return { kind: 'terminal_error', reason: assistant.errorMessage ?? assistant.stopReason };
+	return {
+		kind: 'terminal_error',
+		reason: assistant.errorMessage ?? assistant.stopReason,
+	};
 }
 
 /**
@@ -440,10 +447,21 @@ export function findTrailingPartialToolBatch(
  * message (the persisted record carries only `errorMessage` text, so the
  * marker is the transport) — checked first. The pattern list is the
  * best-effort heuristic for error messages Flue does not author.
+ *
+ * It also takes a model call's error as TanStack reports it (`message` and
+ * an optional `code`), with the same rules.
  */
-export function isRetryableModelError(message: AssistantMessage): boolean {
-	if (message.stopReason !== 'error' || !message.errorMessage) return false;
-	if (message.errorMessage.includes(RETRYABLE_INTERRUPTION_MARKER)) return true;
+export function isRetryableModelError(
+	input: AssistantMessage | { message: string; code?: string },
+): boolean {
+	const errorText =
+		'role' in input
+			? input.stopReason === 'error'
+				? input.errorMessage
+				: undefined
+			: [input.message, input.code].filter(Boolean).join(' ');
+	if (!errorText) return false;
+	if (errorText.includes(RETRYABLE_INTERRUPTION_MARKER)) return true;
 	// pi-ai's OpenAI-compatible layer stamps unrecognized wire finish_reasons
 	// as "Provider finish_reason: <reason>". Aggregators (e.g. OpenRouter)
 	// report an upstream provider dying mid-generation as the bare "error"
@@ -451,7 +469,7 @@ export function isRetryableModelError(message: AssistantMessage): boolean {
 	// reasons (error_quota, error-content-filter, content_filter, …), which
 	// stay terminal.
 	return /overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|network.?error|connection.?(?:reset|refused|lost|error)|socket hang up|fetch failed|timed? out|timeout|terminated|provider finish_reason:\s*error(?![-\w])/i.test(
-		message.errorMessage,
+		errorText,
 	);
 }
 

@@ -22,6 +22,7 @@ import {
 	projectAgentConversationSnapshot,
 } from '../conversation-public.ts';
 import { loadReducedConversationPrefix } from '../conversation-reader.ts';
+import { flueRecordsOf } from '../conversation-records.ts';
 import { reduceConversationRecords } from '../conversation-reducer.ts';
 import type {
 	ConversationStreamReadResult,
@@ -61,7 +62,7 @@ export function projectConversationRead(
 		const chunks = projectAgentConversationBatch({
 			state,
 			previousState,
-			records: batch.records,
+			records: flueRecordsOf(batch.records),
 			batchOrdinal: parseOffset(batch.offset),
 		});
 		items.push(
@@ -182,7 +183,11 @@ export async function observeSubmissionSettlement(
 	let state =
 		parseOffset(atHead.recordsThroughOffset) === parseOffset(options.offset)
 			? atHead
-			: await loadReducedConversationPrefix({ store, path, offset: options.offset });
+			: await loadReducedConversationPrefix({
+					store,
+					path,
+					offset: options.offset,
+				});
 	let offset = options.offset;
 	while (true) {
 		throwIfAborted(options.signal);

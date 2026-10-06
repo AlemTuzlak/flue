@@ -4,6 +4,7 @@ import type {
 	CanonicalChildSessionRef,
 	ConversationCreatedRecord,
 	ConversationRecord,
+	HarnessLogRecord,
 } from './conversation-records.ts';
 import type { IndexedConversationRecord, ReducedInstanceState } from './conversation-reducer.ts';
 import { conversationScopeKey, reduceConversationRecords } from './conversation-reducer.ts';
@@ -21,7 +22,25 @@ export interface ConversationRecordScope {
 
 export interface ConversationAppendOptions {
 	submission?: { submissionId: string; attemptId: string };
+	/**
+	 * Inside a tool call on the harness: stage the records with the call's tool
+	 * batch instead of appending them now. They land when the batch commits.
+	 */
+	stage?: (records: readonly HarnessLogRecord[]) => void;
 }
+
+/**
+ * Where a writer appends. `store`: straight to the stream, behind the
+ * writer's own producer claim. `harness`: through the harness log, whose log
+ * store holds the claim; reads then fold the stream itself.
+ */
+type WriterTarget =
+	| { kind: 'store'; claim: ConversationProducerClaim }
+	| {
+			kind: 'harness';
+			append: (records: readonly HarnessLogRecord[]) => Promise<void>;
+			incarnation: string;
+	  };
 
 type ConversationCreationInput = ConversationCreatedRecord extends infer Record
 	? Record extends ConversationCreatedRecord
@@ -60,10 +79,10 @@ export class ConversationRecordWriter {
 	private constructor(
 		private readonly store: ConversationStreamStore,
 		readonly path: string,
-		private claim: ConversationProducerClaim,
+		private readonly target: WriterTarget,
 		private readonly onFailed?: (writer: ConversationRecordWriter) => void,
 	) {
-		this.nextProducerSequence = claim.nextProducerSequence;
+		this.nextProducerSequence = target.kind === 'store' ? target.claim.nextProducerSequence : 0;
 		this.foldHost = getConversationFoldHost(store, path);
 		this.foldHost.pin();
 	}
@@ -77,11 +96,49 @@ export class ConversationRecordWriter {
 	}): Promise<ConversationRecordWriter> {
 		await options.store.createStream(options.path, options.identity);
 		const claim = await options.store.acquireProducer(options.path, options.producerId);
-		return new ConversationRecordWriter(options.store, options.path, claim, options.onFailed);
+		return new ConversationRecordWriter(
+			options.store,
+			options.path,
+			{ kind: 'store', claim },
+			options.onFailed,
+		);
+	}
+
+	/**
+	 * A writer whose records go through the harness log of `path`. `append`
+	 * appends host records through any open session of that log. Each record
+	 * names its conversation's session with `thread` (the conversation id).
+	 */
+	static async overHarness(options: {
+		store: ConversationStreamStore;
+		path: string;
+		identity: ConversationStreamIdentity;
+		append: (records: readonly HarnessLogRecord[]) => Promise<void>;
+		onFailed?: (writer: ConversationRecordWriter) => void;
+	}): Promise<ConversationRecordWriter> {
+		await options.store.createStream(options.path, options.identity);
+		const meta = await options.store.getMeta(options.path);
+		if (!meta) throw new Error(`[flue] Conversation stream "${options.path}" does not exist.`);
+		return new ConversationRecordWriter(
+			options.store,
+			options.path,
+			{
+				kind: 'harness',
+				append: options.append,
+				incarnation: meta.incarnation,
+			},
+			options.onFailed,
+		);
 	}
 
 	async loadReducedState(): Promise<ReducedInstanceState> {
 		this.assertActive();
+		// The harness also appends to the stream (its own records, and the
+		// records a tool batch staged), so the fold follows the stream head.
+		if (this.target.kind === 'harness') {
+			this.reducedState = await this.foldHost.getStateAtHead();
+			return this.reducedState;
+		}
 		if (this.reducedState) return this.reducedState;
 		// The shared fold host serves the same state a from-scratch load
 		// produces — and reuses a fold a read already paid for. The producer
@@ -130,7 +187,11 @@ export class ConversationRecordWriter {
 	}
 
 	get offset(): string {
-		return this.reducedState?.recordsThroughOffset ?? this.claim.offset;
+		return this.reducedState?.recordsThroughOffset ?? this.initialOffset();
+	}
+
+	private initialOffset() {
+		return this.target.kind === 'store' ? this.target.claim.offset : '-1';
 	}
 
 	get failed(): boolean {
@@ -196,9 +257,7 @@ export class ConversationRecordWriter {
 			if (this.pendingTimer) clearTimeout(this.pendingTimer);
 			this.pendingTimer = undefined;
 			if (this.pendingRecords.length === 0) {
-				return Promise.resolve({
-					offset: this.reducedState?.recordsThroughOffset ?? this.claim.offset,
-				});
+				return Promise.resolve({ offset: this.offset });
 			}
 			this.lastFlushStartedAt = Date.now();
 			const records = this.pendingRecords;
@@ -239,6 +298,9 @@ export class ConversationRecordWriter {
 	): Promise<{ offset: string }> {
 		const operation = this.tail.then(async () => {
 			this.assertActive();
+			if (this.target.kind === 'harness')
+				return this.appendThroughHarness(this.target, records, options);
+			const claim = this.target.claim;
 			const reduced = this.reducedState
 				? reduceConversationRecords(
 						this.reducedState,
@@ -249,9 +311,9 @@ export class ConversationRecordWriter {
 			const producerSequence = this.nextProducerSequence;
 			const input = {
 				path: this.path,
-				producerId: this.claim.producerId,
-				producerEpoch: this.claim.producerEpoch,
-				incarnation: this.claim.incarnation,
+				producerId: claim.producerId,
+				producerEpoch: claim.producerEpoch,
+				incarnation: claim.incarnation,
 				producerSequence,
 				...(options.submission ? { submission: options.submission } : {}),
 				records,
@@ -271,18 +333,14 @@ export class ConversationRecordWriter {
 				if (reduced) {
 					reduced.recordsThroughOffset = result.offset;
 					this.reducedState = reduced;
-					this.foldHost.adoptState(reduced, this.claim.incarnation);
+					this.foldHost.adoptState(reduced, claim.incarnation);
 					// Durable fold checkpoint. The encode is synchronous (states
 					// are never mutated after publication, so it reads a stable
 					// snapshot); the store write floats off the append's critical
 					// path — the batch is durable either way, and a lost
 					// checkpoint just means the next cold load folds a longer
 					// suffix.
-					this.batchesSinceFoldCheckpoint += 1;
-					if (this.batchesSinceFoldCheckpoint >= FOLD_CHECKPOINT_INTERVAL) {
-						this.batchesSinceFoldCheckpoint = 0;
-						writeFoldCheckpoint(this.store, this.path, reduced, this.claim.incarnation);
-					}
+					this.checkpointEvery(reduced, claim.incarnation);
 				}
 				return result;
 			} catch (error) {
@@ -294,6 +352,38 @@ export class ConversationRecordWriter {
 			() => {},
 		);
 		return operation;
+	}
+
+	private async appendThroughHarness(
+		target: Extract<WriterTarget, { kind: 'harness' }>,
+		records: readonly ConversationRecord[],
+		options: ConversationAppendOptions,
+	) {
+		const threaded = records.map((record) => ({
+			...record,
+			thread: record.conversationId,
+		}));
+		if (options.stage) {
+			options.stage(threaded);
+			return { offset: this.offset };
+		}
+		try {
+			await target.append(threaded);
+			const state = await this.foldHost.getStateAtHead();
+			this.reducedState = state;
+			this.checkpointEvery(state, target.incarnation);
+			return { offset: state.recordsThroughOffset };
+		} catch (error) {
+			throw this.fail(error);
+		}
+	}
+
+	/** Durable fold checkpoint every `FOLD_CHECKPOINT_INTERVAL` appends. A lost one only lengthens the next cold fold. */
+	private checkpointEvery(state: ReducedInstanceState, incarnation: string) {
+		this.batchesSinceFoldCheckpoint += 1;
+		if (this.batchesSinceFoldCheckpoint < FOLD_CHECKPOINT_INTERVAL) return;
+		this.batchesSinceFoldCheckpoint = 0;
+		writeFoldCheckpoint(this.store, this.path, state, incarnation);
 	}
 
 	private assertActive(): void {

@@ -34,9 +34,6 @@
 		"packages/runtime": {
 			"entry": ["test/fixtures/durable-boundary-child.mjs"],
 			"ignoreDependencies": ["@hono/node-server"]
-		},
-		"packages/vite": {
-			"ignoreDependencies": ["@earendil-works/pi-ai"]
 		}
 	}
 }
