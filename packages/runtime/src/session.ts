@@ -172,14 +172,18 @@ import {
 	type ResultToolBundle,
 	ResultUnavailableError,
 } from './result.ts';
-import type {
-	AgentSubmissionInput,
-	AgentSubmissionInspection,
-	AgentSubmissionInterruption,
-	AgentSubmissionSession,
-	InterruptedToolCallRef,
-	ProcessAgentSubmissionOptions,
-	SubmissionJoinSource,
+import {
+	type AgentSubmissionInput,
+	type AgentSubmissionInspection,
+	type AgentSubmissionInterruption,
+	type AgentSubmissionSession,
+	decideRecoveredSubmission,
+	type InterruptedToolCallRef,
+	type ProcessAgentSubmissionOptions,
+	type RecoveredSubmissionSettlement,
+	type RecoveredSubmissionVerdict,
+	type SubmissionJoinSource,
+	type SubmissionRecoveryLedger,
 } from './runtime/agent-submissions.ts';
 import { type AttachmentStore, createAttachmentRef } from './runtime/attachment-store.ts';
 import {
@@ -779,6 +783,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * path. The next turn of the input sends it (see `startInputTurn`).
 	 */
 	private pendingHarnessInput: { entryId: string; isSignal: boolean } | undefined;
+	/** On the durable path: the running submission sent its input to the harness. */
+	private sentHarnessInput = false;
+	/** Flue's ledger for the harness `recover` hook, while a submission runs. */
+	private activeRecovery: SubmissionRecoveryLedger | undefined;
+	/** What the harness `recover` hook decided for each submission, while a submission runs. */
+	private recoveryVerdicts = new Map<string, RecoveredSubmissionVerdict>();
 	/**
 	 * On the durable path: claimed deliveries sent to the harness as steers,
 	 * by submission id, until they join the running turn.
@@ -2103,6 +2113,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		this.pendingHarnessInput = undefined;
 		if (!input) return this.agentLoop.continue();
 		const inputId = this.activeSubmissionId;
+		this.sentHarnessInput = inputId !== undefined;
 		if (input.isSignal) return this.agentLoop.continueTurn(inputId ? { inputId } : {});
 		// Flue's view gets the input at the end, where the harness puts it.
 		const conversation = await this.requireConversation();
@@ -3847,13 +3858,220 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	}
 
 	/**
-	 * The harness `recover` on the durable path. Before a recovered turn runs,
-	 * Flue's records get the history of the cut (see
-	 * {@link recordRecoveredTurn}). The harness decision stays as it is.
+	 * True on the durable path: the harness `recover` hook decides an
+	 * interrupted submission whose input applied.
+	 */
+	get recoversThroughHarness() {
+		return this.harnessHost !== undefined;
+	}
+
+	/**
+	 * The harness `recover` on the durable path. While a submission runs with
+	 * Flue's ledger, the hook decides each running submission by Flue's rules
+	 * (see `decideRecoveredSubmission`): its row, the harness's final answer,
+	 * and Flue's records. A settle writes Flue's records and settles the row
+	 * in the hook (see {@link settleRecoveredInput}), and the harness settles
+	 * the input with the same outcome. Before a recovered turn runs, Flue's
+	 * records get the history of the cut (see {@link recordRecoveredTurn}).
+	 * Any other input keeps the harness decision.
 	 */
 	private async recoverHarnessInput(ctx: RecoverContext) {
-		if (ctx.decision.action === 'run') await this.recordRecoveredTurn(ctx);
-		return undefined;
+		const ledger = this.activeRecovery;
+		const submission = ledger ? await ledger.getSubmission(ctx.input.inputId) : null;
+		if (!ledger || submission?.status !== 'running') {
+			if (ctx.decision.action === 'run') await this.recordRecoveredTurn(ctx);
+			return undefined;
+		}
+		const answered = ctx.decision.action === 'settle' && ctx.decision.outcome === 'completed';
+		const verdict = await this.decideRecoveredInput(submission, answered, ctx.interruptedTools);
+		this.recoveryVerdicts.set(submission.submissionId, verdict);
+		if (verdict.action === 'run') {
+			await this.recordRecoveredTurn(ctx);
+			return { action: 'run' as const };
+		}
+		await this.settleRecoveredInput(ledger, submission, verdict, ctx.interruptedTools, (records) =>
+			this.appendThroughRecovery(ctx, records),
+		);
+		if (verdict.outcome === 'completed')
+			return { action: 'settle' as const, outcome: 'completed' as const };
+		return {
+			action: 'settle' as const,
+			outcome: verdict.outcome,
+			error: { message: verdict.error.message, code: verdict.error.type },
+		};
+	}
+
+	/** Write `records` in the harness `recover` hook: one host-record append of `ctx.session`. */
+	private async appendThroughRecovery(ctx: RecoverContext, records: readonly ConversationRecord[]) {
+		const staged: HarnessLogRecord[] = [];
+		await this.conversationWriter.append(records, {
+			...this.canonicalAppendOptions(),
+			stage: (batch) => staged.push(...batch),
+		});
+		await ctx.session.append(staged);
+	}
+
+	/**
+	 * Flue's decision for a running submission that recovery found. It is
+	 * finished when the harness has its final answer, or when Flue's records
+	 * show a completed response (a terminal tool batch among them). The
+	 * attempts that ran leave out the replacement attempt that recovers it.
+	 */
+	private async decideRecoveredInput(
+		submission: AgentSubmission,
+		answered: boolean,
+		closed: RecoverContext['interruptedTools'],
+	) {
+		const finished =
+			answered || (await this.inspectSubmissionInput(submission.input)) === 'completed';
+		const attemptsUsed =
+			submission.attemptId === this.activeSubmissionAttemptId
+				? submission.attemptCount - 1
+				: submission.attemptCount;
+		const interruptedTools = [
+			...(await this.recordedInterruptedTools(submission.submissionId)),
+			...this.restingToolCalls(await this.requireConversation(), closed).interrupted,
+		];
+		return decideRecoveredSubmission(submission, {
+			finished,
+			attemptsUsed,
+			interruptedTools,
+			now: Date.now(),
+		});
+	}
+
+	/**
+	 * Settle a recovered submission through Flue's ledger. A failed or aborted
+	 * one first comes to rest, as `recordSubmissionTerminal` does: a cut answer
+	 * ends as an aborted assistant, and each call of a cut tool batch gets
+	 * the interrupted marker (or the truncated outcome). The advisory signal
+	 * (`submission_interrupted` or `submission_aborted`) follows. These
+	 * records and the `submission_settled` records reach `write` in one call.
+	 */
+	private async settleRecoveredInput(
+		ledger: SubmissionRecoveryLedger,
+		submission: AgentSubmission,
+		verdict: RecoveredSubmissionSettlement,
+		closed: RecoverContext['interruptedTools'],
+		write: (records: readonly ConversationRecord[]) => Promise<void>,
+	) {
+		const records: ConversationRecord[] = [];
+		if (verdict.outcome !== 'completed') {
+			const conversation = await this.requireConversation();
+			const earlier = await this.recordedInterruptedTools(submission.submissionId);
+			const rest = this.restRecords(conversation, closed);
+			records.push(...rest.records);
+			const advisory = await this.submissionAdvisoryRecord(
+				{
+					submissionId: submission.submissionId,
+					kind: submission.kind,
+					reason: verdict.reason,
+					message: verdict.error.message,
+				},
+				[...earlier, ...rest.interrupted],
+				reduceConversationRecords(
+					await this.conversationWriter.loadReducedState(),
+					records,
+				).conversations.get(this.conversationId)?.activeLeafId ?? null,
+			);
+			if (advisory) records.push(advisory);
+		}
+		await ledger.settle(submission, verdict, records, write);
+	}
+
+	/**
+	 * After harness recovery: settle the running submission by Flue's rules
+	 * when the harness did not recover its input (it settled before the
+	 * stop, or it never got the input). Returns true when the submission
+	 * settled, here or in the harness `recover` hook.
+	 */
+	private async settleRecoveredSubmission() {
+		const submissionId = this.activeSubmissionId;
+		const ledger = this.activeRecovery;
+		if (!submissionId || !ledger) return false;
+		const decided = this.recoveryVerdicts.get(submissionId);
+		if (decided) return decided.action === 'settle';
+		const submission = await ledger.getSubmission(submissionId);
+		if (submission?.status !== 'running') return false;
+		const verdict = await this.decideRecoveredInput(submission, false, []);
+		if (verdict.action === 'run') return false;
+		await this.settleRecoveredInput(ledger, submission, verdict, [], async (records) => {
+			await this.appendCanonical(records);
+		});
+		await this.rebuildCanonicalContext();
+		return true;
+	}
+
+	/**
+	 * The records that bring a cut turn at the leaf to rest: the ghost
+	 * records of a cut answer, or the outcomes and the repair commit of a
+	 * cut tool batch. `interrupted` lists the calls that get the interrupted
+	 * marker.
+	 */
+	private restRecords(
+		conversation: ReducedConversationState,
+		closed: RecoverContext['interruptedTools'],
+	) {
+		const ghost = [...conversation.inProgressMessages.values()].find(
+			(message) => message.parentId === conversation.activeLeafId,
+		);
+		if (ghost) {
+			return { records: this.materializeInProgressStreamRecords(ghost), interrupted: [] };
+		}
+		const resting = this.restingToolCalls(conversation, closed);
+		const batch = resting.batch;
+		if (!batch) return { records: [], interrupted: [] };
+		return {
+			records: [...resting.records, this.repairCommitRecord(batch.entryId, resting.outcomeIds)],
+			interrupted: resting.interrupted,
+		};
+	}
+
+	/**
+	 * The outcomes that close each unresolved call of the cut tool batch at
+	 * the leaf: the truncated outcome for a call that the harness closes as
+	 * truncated, the interrupted marker for every other call (with the child
+	 * conversation id for a `task` call). Recorded outcomes stay.
+	 */
+	private restingToolCalls(
+		conversation: ReducedConversationState,
+		closed: RecoverContext['interruptedTools'],
+	) {
+		const messages = getActiveConversationPath(conversation).flatMap((entry) =>
+			entry.type === 'message' ? [entry] : [],
+		);
+		const partial = findTrailingPartialToolBatch(messages);
+		const records: ConversationRecord[] = [];
+		const outcomeIds: string[] = [];
+		const interrupted: InterruptedToolCallRef[] = [];
+		if (!partial || conversation.activeLeafId !== partial.entryId) {
+			return { batch: undefined, records, outcomeIds, interrupted };
+		}
+		const truncated = new Set(
+			closed.filter((call) => call.reason === 'truncated').map((call) => call.toolCallId),
+		);
+		for (const toolCall of partial.toolCalls) {
+			const recordedId = conversation.toolOutcomes.get(
+				toolOutcomeKey(partial.entryId, toolCall.id),
+			);
+			if (recordedId !== undefined) {
+				outcomeIds.push(recordedId);
+				continue;
+			}
+			const child = [...conversation.childConversations.values()].find(
+				(ref): ref is Extract<CanonicalChildSessionRef, { type: 'task' }> =>
+					ref.type === 'task' && ref.parentToolCallId === toolCall.id,
+			);
+			const record = truncated.has(toolCall.id)
+				? this.truncatedToolCallOutcomeRecord(partial.entryId, toolCall)
+				: toolCall.name === 'task' && child
+					? this.taskInterruptedOutcomeRecord(partial.entryId, toolCall.id, child.conversationId)
+					: this.interruptedToolOutcomeRecord(partial.entryId, toolCall);
+			if (!truncated.has(toolCall.id)) interrupted.push({ name: toolCall.name, id: toolCall.id });
+			records.push(record);
+			outcomeIds.push(record.id);
+		}
+		return { batch: partial, records, outcomeIds, interrupted };
 	}
 
 	/**
@@ -4179,6 +4397,24 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		// cleanup opens this fresh one. Recover interrupted IDs from deterministic
 		// repair records rather than relying on in-memory handoff or result text.
 		const interruptedTools = await this.recordedInterruptedTools(input.submissionId);
+		const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
+		const advisory = await this.submissionAdvisoryRecord(input, interruptedTools, parentId);
+		if (!advisory) return interruptedTools;
+		await this.appendCanonical([advisory]);
+		await this.rebuildCanonicalContext();
+		return interruptedTools;
+	}
+
+	/**
+	 * The terminal advisory signal of a failed or aborted submission
+	 * (`submission_interrupted` or `submission_aborted`), with the calls that
+	 * ended with the interrupted marker. `undefined` when it exists already.
+	 */
+	private async submissionAdvisoryRecord(
+		input: AgentSubmissionInterruption,
+		interruptedTools: ReadonlyArray<InterruptedToolCallRef>,
+		parentId: string | null,
+	) {
 		let body = input.message;
 		if (interruptedTools.length > 0) {
 			const toolList = interruptedTools.map((t) => `  - ${t.name} (${t.id})`).join('\n');
@@ -4188,28 +4424,24 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		const signalType = aborted ? 'submission_aborted' : 'submission_interrupted';
 		const slug = aborted ? 'submission_aborted' : 'submission_interrupted';
 		const recordId = `record_${slug}_${input.submissionId}`;
-		if (await this.conversationWriter.hasRecord(recordId)) return interruptedTools;
-		const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
-		await this.appendCanonical([
-			{
-				...this.canonicalEnvelope('signal', recordId),
-				type: 'signal',
-				messageId: `entry_${slug}_${input.submissionId}`,
-				parentId,
-				signalType,
-				content: body,
-				attributes: {
-					submissionId: input.submissionId,
-					kind: input.kind,
-					reason: input.reason,
-					...(interruptedTools.length > 0
-						? { interruptedTools: JSON.stringify(interruptedTools) }
-						: {}),
-				},
+		if (await this.conversationWriter.hasRecord(recordId)) return undefined;
+		const record: ConversationRecord = {
+			...this.canonicalEnvelope('signal', recordId),
+			type: 'signal',
+			messageId: `entry_${slug}_${input.submissionId}`,
+			parentId,
+			signalType,
+			content: body,
+			attributes: {
+				submissionId: input.submissionId,
+				kind: input.kind,
+				reason: input.reason,
+				...(interruptedTools.length > 0
+					? { interruptedTools: JSON.stringify(interruptedTools) }
+					: {}),
 			},
-		]);
-		await this.rebuildCanonicalContext();
-		return interruptedTools;
+		};
+		return record;
 	}
 
 	skill<S extends v.GenericSchema>(
@@ -5569,8 +5801,15 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		 * assistant and `continue()` would throw.
 		 */
 		restart?: () => Promise<void>;
+		/**
+		 * `start` runs harness recovery. Its `recover` hook applies Flue's
+		 * limits (abort, attempts, timeout), so the first start has no halt
+		 * check for the deadline.
+		 */
+		recovers?: boolean;
 	}): Promise<void> {
 		let start = options.start;
+		let firstStart = true;
 		let assistant = options.resume?.assistant;
 		let turnCompleted = false;
 		let overflowRecoveryAttempted = false;
@@ -5634,7 +5873,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				return;
 			}
 
-			throwIfHalted();
+			if (options.recovers && firstStart) {
+				if (options.signal.aborted) throw abortErrorFor(options.signal);
+			} else throwIfHalted();
+			firstStart = false;
 
 			if (overflow && assistant !== undefined) {
 				overflowRecoveryAttempted = true;
@@ -6099,6 +6341,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			startedAt: options?.startedAt,
 			timeoutAt: options?.timeoutAt,
 			joinSource: options?.joinSource,
+			recovery: options?.recovery,
 			signal,
 		});
 	}
@@ -6209,6 +6452,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * (`resumeReattachedChild`). Both callers converge the stream structurally
 	 * (`materializeGhostStream`) before reaching here, so classification only
 	 * ever sees complete units.
+	 *
+	 * Returns true when harness recovery settled the running submission
+	 * through Flue's ledger; then no model turn runs here.
 	 */
 	private async resumeConversationToCompletion(options: {
 		inputEntryId: string;
@@ -6219,7 +6465,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		 * recovers it, and the agent loop follows the recovered turns.
 		 */
 		harnessRecovers: boolean;
-	}): Promise<void> {
+	}) {
 		// The subagent-reattach caller reaches repair through this call; on the
 		// main seam (`runPersistedContextInput`) the repair phase already ran
 		// pre-append and this re-run is an idempotent no-op — a repaired batch
@@ -6229,8 +6475,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			await this.runModelTurnWithRecovery({
 				start: () => this.agentLoop.recoverTurns(),
 				signal: options.signal,
+				recovers: true,
 			});
 			this.throwIfError(options.errorLabel);
+			if (await this.settleRecoveredSubmission()) return true;
 		} else {
 			await this.repairResumableTail(options.inputEntryId, options.signal);
 		}
@@ -6308,6 +6556,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				throw new Error(`[flue] Unhandled submission classification: ${JSON.stringify(unhandled)}`);
 			}
 		}
+		return false;
 	}
 
 	/**
@@ -6399,6 +6648,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		onInputApplied?: (durability: SubmissionDurability) => Promise<void> | void;
 		submissionAttempt?: import('./agent-execution-store.ts').SubmissionAttemptRef;
 		joinSource?: SubmissionJoinSource;
+		recovery?: SubmissionRecoveryLedger;
 		signal: AbortSignal;
 	}): Promise<{ text: string }> {
 		return this.withCallOverrides(
@@ -6413,6 +6663,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				this.activeJoinSource = options.joinSource;
 				this.activeJoinSignal = options.signal;
 				this.activeInputEntryId = options.inputEntryId;
+				this.activeRecovery = options.recovery;
 				const durability = this.resolveSubmissionDurability(options.startedAt, options.timeoutAt);
 				this.activeTimeoutAt = durability.timeoutAt;
 				try {
@@ -6477,18 +6728,28 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// N messages piled up while idle become one response with one
 					// start-hook run per delivery.
 					await this.resolveInterruptedJoins(options.signal);
-					await this.applyQueuedJoins();
-					await this.resumeConversationToCompletion({
+					// A recovered input on the durable path claims no queued
+					// delivery before the harness `recover` hook decides it: the
+					// hook can settle it, and a delivery must not settle with it.
+					// The turn boundaries and the would-stop phase claim them.
+					if (!harnessRecovers) await this.applyQueuedJoins();
+					const settled = await this.resumeConversationToCompletion({
 						inputEntryId: options.inputEntryId,
 						errorLabel: options.errorLabel,
 						signal: options.signal,
 						harnessRecovers,
 					});
+					// The harness `recover` hook settled the submission through
+					// Flue's ledger: nothing more runs for it.
+					if (settled) return { text: this.getAssistantText() };
 					await this.runWouldStopPhase({
 						errorLabel: options.errorLabel,
 						signal: options.signal,
 					});
 					await this.flushResponseOutput();
+					// The input's harness settlement lands before the ledger settles the row.
+					const inputId = this.activeSubmissionId;
+					if (this.sentHarnessInput && inputId) await this.agentLoop.settled(inputId);
 					// Keep the public submission call void, but return the completed text
 					// through runOperation so terminal telemetry can project agentOutput.
 					return { text: this.getAssistantText() };
@@ -6499,6 +6760,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// whose context is rebuilt from canonical records.
 					this.pendingSignalAppends = [];
 					this.pendingHarnessInput = undefined;
+					this.sentHarnessInput = false;
+					this.activeRecovery = undefined;
+					this.recoveryVerdicts.clear();
 					this.harnessJoins.clear();
 					this.joinedDeliveries = [];
 					this.finishCycleFailure = undefined;

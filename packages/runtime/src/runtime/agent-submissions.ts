@@ -11,6 +11,7 @@ import { DURABILITY_DEFAULT_TIMEOUT_MS } from '../agent-execution-store.ts';
 import { assertDurability } from '../agent-tuning.ts';
 import { decodeBase64 } from '../base64.ts';
 import type { FlueContextInternal } from '../client.ts';
+import type { ConversationRecord } from '../conversation-records.ts';
 import type { ConversationRecordWriter } from '../conversation-writer.ts';
 import {
 	AgentInstanceExistsError,
@@ -92,6 +93,102 @@ export interface ProcessAgentSubmissionOptions {
 	 * degenerate/test setups — the session then serializes exactly as before.
 	 */
 	joinSource?: SubmissionJoinSource;
+	/**
+	 * Flue's ledger for the harness `recover` hook on the durable path. With
+	 * it, the hook decides a recovered submission by Flue's rules (see
+	 * {@link decideRecoveredSubmission}) and settles it through the outbox.
+	 */
+	recovery?: SubmissionRecoveryLedger;
+}
+
+/**
+ * Flue's submission ledger, as the harness `recover` hook of a durable
+ * session reads and settles it. `processSubmission` binds it to its store,
+ * context, and writer.
+ */
+export interface SubmissionRecoveryLedger {
+	/** The row of a submission, or `null` when the id is unknown. */
+	getSubmission(submissionId: string): Promise<AgentSubmission | null>;
+	/**
+	 * Settle `submission` and the deliveries joined into it through the
+	 * settlement outbox: reserve each settlement, give `leading` and the
+	 * `submission_settled` records to `write` in one call, then finalize the
+	 * rows. `leading` is written only when this call owns the settlement.
+	 */
+	settle(
+		submission: AgentSubmission,
+		verdict: RecoveredSubmissionSettlement,
+		leading: readonly ConversationRecord[],
+		write: (records: readonly ConversationRecord[]) => Promise<void>,
+	): Promise<void>;
+}
+
+/** How a recovered submission settles. See {@link decideRecoveredSubmission}. */
+export type RecoveredSubmissionSettlement =
+	| { readonly action: 'settle'; readonly outcome: 'completed' }
+	| {
+			readonly action: 'settle';
+			readonly outcome: 'aborted' | 'failed';
+			readonly reason: AgentSubmissionInterruption['reason'];
+			readonly error: FlueError;
+	  };
+
+/** Whether a recovered submission runs again, or how it settles. */
+export type RecoveredSubmissionVerdict = { readonly action: 'run' } | RecoveredSubmissionSettlement;
+
+/**
+ * Decide a submission whose harness input a stopped host left, in Flue's
+ * ledger order: a finished response settles `completed`; then a requested
+ * abort settles `aborted`; then a spent attempt budget settles `failed` with
+ * {@link SubmissionRetryExhaustedError}; then a passed deadline settles
+ * `failed` with {@link SubmissionTimeoutError}; else the input runs again.
+ *
+ * `attemptsUsed` counts the attempts that already ran: the row's
+ * `attemptCount` without the replacement attempt that recovers it.
+ * `interruptedTools` are the calls that the settlement closes with the
+ * interrupted marker, and the ones earlier attempts closed.
+ */
+export function decideRecoveredSubmission(
+	submission: AgentSubmission,
+	facts: {
+		readonly finished: boolean;
+		readonly attemptsUsed: number;
+		readonly interruptedTools: ReadonlyArray<InterruptedToolCallRef>;
+		readonly now: number;
+	},
+) {
+	if (facts.finished) {
+		return { action: 'settle', outcome: 'completed' } satisfies RecoveredSubmissionVerdict;
+	}
+	if (submission.abortRequestedAt !== undefined) {
+		return {
+			action: 'settle',
+			outcome: 'aborted',
+			reason: 'aborted',
+			error: new SubmissionAbortedError(),
+		} satisfies RecoveredSubmissionVerdict;
+	}
+	if (facts.attemptsUsed >= submission.maxAttempts) {
+		return {
+			action: 'settle',
+			outcome: 'failed',
+			reason: 'exhausted_retry_budget',
+			error: new SubmissionRetryExhaustedError({
+				attemptCount: facts.attemptsUsed,
+				maxAttempts: submission.maxAttempts,
+				...(facts.interruptedTools.length > 0 ? { interruptedTools: facts.interruptedTools } : {}),
+			}),
+		} satisfies RecoveredSubmissionVerdict;
+	}
+	if (submission.timeoutAt > 0 && facts.now >= submission.timeoutAt) {
+		return {
+			action: 'settle',
+			outcome: 'failed',
+			reason: 'exceeded_timeout',
+			error: new SubmissionTimeoutError(),
+		} satisfies RecoveredSubmissionVerdict;
+	}
+	return { action: 'run' } satisfies RecoveredSubmissionVerdict;
 }
 
 /**
@@ -118,6 +215,11 @@ export interface SubmissionJoinSource {
  */
 export interface AgentSubmissionSession {
 	readonly conversationId: string;
+	/**
+	 * True when the session runs on the durable harness host: the harness
+	 * `recover` hook decides an interrupted submission whose input applied.
+	 */
+	readonly recoversThroughHarness?: boolean;
 	inspectSubmissionInput(
 		input: AgentSubmissionInput,
 	): Promise<AgentSubmissionInspection> | AgentSubmissionInspection;
@@ -461,11 +563,11 @@ export async function materializeSubmissionAttachments(
 	}
 }
 
-export function createAgentSubmissionSessionHandler(
+export function createAgentSubmissionSessionHandler<T>(
 	agent: Agent,
 	input: AgentSubmissionInput,
-	execute: (session: AgentSubmissionSession) => Promise<unknown> | unknown,
-): (ctx: FlueContextInternal) => Promise<unknown> {
+	execute: (session: AgentSubmissionSession) => Promise<T> | T,
+): (ctx: FlueContextInternal) => Promise<T> {
 	return async (ctx) => {
 		const session = await openAgentSubmissionSession(ctx, agent, input);
 		return execute(session);
@@ -506,10 +608,14 @@ export async function reconcileInterruptedSubmission(
 	// contradictory interruption advisory over) work that already completed.
 	const ctx = createContext(input.submissionId);
 	let state: AgentSubmissionInspection;
+	let recoversThroughHarness = false;
 	try {
-		state = (await createAgentSubmissionSessionHandler(agent, input, (s) =>
-			s.inspectSubmissionInput(input),
-		)(ctx)) as AgentSubmissionInspection;
+		const inspection = await createAgentSubmissionSessionHandler(agent, input, async (s) => ({
+			state: await s.inspectSubmissionInput(input),
+			recoversThroughHarness: s.recoversThroughHarness === true,
+		}))(ctx);
+		state = inspection.state;
+		recoversThroughHarness = inspection.recoversThroughHarness;
 	} catch (renderError) {
 		// A throwing render (e.g. a failing sandbox factory) never consumes an
 		// attempt or reaches the timeout check, so the submission used to retry
@@ -530,6 +636,18 @@ export async function reconcileInterruptedSubmission(
 			return undefined;
 		}
 		throw renderError;
+	}
+	// On the durable path, the harness has the applied input. The replacement
+	// attempt opens the session, and the harness `recover` hook decides it by
+	// the rules below (see `decideRecoveredSubmission`), so they run once.
+	// An absent input never reached the harness: it takes the path below.
+	if (recoversThroughHarness && state !== 'absent') {
+		const replacement = await submissions.replaceSubmissionAttempt(
+			attempt,
+			generateAttemptId(),
+			lease,
+		);
+		return replacement?.attemptId ? replacement : undefined;
 	}
 	if (state === 'completed') {
 		await settleJoinedSubmissions(
@@ -853,10 +971,30 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 		listUnresolved: () => submissions.listJoinedSubmissions(attempt.submissionId),
 	};
 
+	// The harness `recover` hook settles a recovered submission through this
+	// ledger. Then the row is settled already, and nothing below settles it.
+	let settledInRecovery = false;
+	const recovery: SubmissionRecoveryLedger = {
+		getSubmission: (submissionId) => submissions.getSubmission(submissionId),
+		settle: async (row, verdict, leading, write) => {
+			await settleRecoveredSubmission({
+				submissions,
+				submission: row,
+				verdict,
+				leading,
+				write,
+				ctx,
+				conversationWriter: opts.conversationWriter,
+			});
+			if (row.submissionId === submission.submissionId) settledInRecovery = true;
+		},
+	};
+
 	const execute = () =>
 		createAgentSubmissionSessionHandler(agent, input, (session) => {
 			const handle = session.processSubmissionInput(input, {
 				joinSource,
+				recovery,
 				onInputApplied: async (durability: SubmissionDurability) => {
 					if (!(await submissions.markSubmissionInputApplied(attempt, durability))) {
 						throw new Error(
@@ -906,8 +1044,20 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 	// Pre-execution abort: a queued submission that was abort-flagged is still
 	// claimed (creating an attempt) so settlement is uniform and
 	// attempt-based; settle it as aborted before running any model work. This
-	// also covers an abort that landed between claim and processing.
-	if (persisted.abortRequestedAt !== undefined) {
+	// also covers an abort that landed between claim and processing. On the
+	// durable path, an input that applied before is in the harness: the
+	// harness `recover` hook settles it, so the run below goes on.
+	if (
+		persisted.abortRequestedAt !== undefined &&
+		!(
+			persisted.inputAppliedAt !== undefined &&
+			(await createAgentSubmissionSessionHandler(
+				agent,
+				input,
+				(session) => session.recoversThroughHarness === true,
+			)(ctx))
+		)
+	) {
 		await settleAbortedWithContext(
 			submissions,
 			submission,
@@ -936,6 +1086,7 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 				execute,
 			);
 		await run();
+		if (settledInRecovery) return;
 	} catch (error) {
 		if (opts.isShutdownAbort?.(error)) {
 			throw error;
@@ -1175,6 +1326,52 @@ async function settleSubmissionWithRecord(
 	error?: unknown,
 	conversationWriter?: ConversationRecordWriter,
 ): Promise<void> {
+	const reserved = await reserveSettlement(
+		submissions,
+		kind,
+		attempt,
+		ctx,
+		outcome,
+		error,
+		conversationWriter,
+	);
+	if (reserved.status !== 'reserved') return;
+	const existing = await reserved.writer.getRecord(reserved.recordId);
+	if (!existing) {
+		await reserved.writer.append([reserved.record], { submission: attempt });
+	} else if (JSON.stringify(existing) !== JSON.stringify(reserved.record)) {
+		// A canonical settlement record with this submission's deterministic key
+		// already exists but its content differs from what this attempt computed.
+		// Attempt fencing makes this unreachable in normal operation (a settled
+		// submission is not re-processed); if it ever happens it is an invariant
+		// violation. The durable canonical record is the client-visible authority,
+		// so finalize the operational row against it rather than returning false —
+		// refusing would wedge reconciliation in an unterminable loop. Surface it
+		// loudly for diagnosis instead of swallowing it.
+		console.error(
+			'[flue:submission-settlement] Canonical settlement conflict; the existing durable record is authoritative.',
+			{ submissionId: attempt.submissionId, recordId: reserved.recordId },
+		);
+	}
+	await reserved.finish();
+}
+
+/**
+ * The first half of a settlement through the outbox: reserve it, or settle
+ * the row directly where no canonical record can anchor it (`settled`), or
+ * learn that another settle owns it (`refused`). A `reserved` settlement
+ * holds the `submission_settled` record to write, and `finish` publishes
+ * the live event and finalizes the row after the record is durable.
+ */
+async function reserveSettlement(
+	submissions: AgentSubmissionStore,
+	kind: AgentSubmission['kind'],
+	attempt: SubmissionAttemptRef,
+	ctx: FlueContextInternal,
+	outcome: 'completed' | 'failed' | 'aborted',
+	error: unknown,
+	conversationWriter: ConversationRecordWriter | undefined,
+) {
 	// Payload-wins decoration (see createFlueContext's createEvent) keeps this
 	// submissionId intact even when a joined delivery settles under the host's
 	// context.
@@ -1205,11 +1402,9 @@ async function settleSubmissionWithRecord(
 		if (outcome === 'completed') await submissions.completeSubmission(attempt);
 		else await submissions.failSubmission(attempt, error ?? new SubmissionAbortedError());
 		await publishTerminalEvent();
+		return { status: 'settled' as const };
 	};
-	if (!conversationWriter) {
-		await settleOperationalRow();
-		return;
-	}
+	if (!conversationWriter) return settleOperationalRow();
 	const eventKey = `record_${kind}-submission:${attempt.submissionId}:settled`;
 	const reduced = await conversationWriter.loadReducedState();
 	const conversation =
@@ -1219,10 +1414,7 @@ async function settleSubmissionWithRecord(
 		[...reduced.conversations.values()].find(
 			(candidate) => candidate.harness === 'default' && candidate.session === 'default',
 		);
-	if (!conversation) {
-		await settleOperationalRow();
-		return;
-	}
+	if (!conversation) return settleOperationalRow();
 	const pending = (await submissions.listPendingSubmissionSettlements()).find(
 		(candidate) => candidate.submissionId === attempt.submissionId,
 	);
@@ -1277,31 +1469,79 @@ async function settleSubmissionWithRecord(
 				}),
 			);
 		}
-		return;
+		return { status: 'refused' as const };
 	}
-	const existing = await conversationWriter.getRecord(eventKey);
-	if (!existing) {
-		await conversationWriter.append([obligation.record], { submission: attempt });
-	} else if (JSON.stringify(existing) !== JSON.stringify(obligation.record)) {
-		// A canonical settlement record with this submission's deterministic key
-		// already exists but its content differs from what this attempt computed.
-		// Attempt fencing makes this unreachable in normal operation (a settled
-		// submission is not re-processed); if it ever happens it is an invariant
-		// violation. The durable canonical record is the client-visible authority,
-		// so finalize the operational row against it rather than returning false —
-		// refusing would wedge reconciliation in an unterminable loop. Surface it
-		// loudly for diagnosis instead of swallowing it.
-		console.error(
-			'[flue:submission-settlement] Canonical settlement conflict; the existing durable record is authoritative.',
-			{ submissionId: attempt.submissionId, recordId: eventKey },
+	return {
+		status: 'reserved' as const,
+		writer: conversationWriter,
+		recordId: eventKey,
+		record: obligation.record,
+		finish: async () => {
+			await publishTerminalEvent();
+			await submissions.finalizeSubmissionSettlement(attempt, eventKey, {
+				...(outcome === 'completed' || error === undefined
+					? {}
+					: { errorMessage: error instanceof Error ? error.message : String(error) }),
+			});
+		},
+	};
+}
+
+/**
+ * Settle a submission that the harness `recover` hook decided, with the
+ * deliveries joined into it, through the outbox. Every settlement is
+ * reserved first; then `write` gets `leading` (the hook's own records) and
+ * each `submission_settled` record that is not durable yet, in one call, so
+ * the harness settle and Flue's records land in one append; then each row
+ * is finalized, the joined deliveries first.
+ */
+async function settleRecoveredSubmission(options: {
+	submissions: AgentSubmissionStore;
+	submission: AgentSubmission;
+	verdict: RecoveredSubmissionSettlement;
+	leading: readonly ConversationRecord[];
+	write: (records: readonly ConversationRecord[]) => Promise<void>;
+	ctx: FlueContextInternal;
+	conversationWriter: ConversationRecordWriter | undefined;
+}) {
+	const { submissions, submission, verdict, ctx, conversationWriter } = options;
+	const attempt = submissionAttemptRef(submission);
+	if (!attempt) return;
+	const error = verdict.outcome === 'completed' ? undefined : verdict.error;
+	const reservations = [];
+	for (const joined of await submissions.listJoinedSubmissions(attempt.submissionId)) {
+		if (joined.status !== 'joined') continue;
+		reservations.push(
+			await reserveSettlement(
+				submissions,
+				joined.kind,
+				{ submissionId: joined.submissionId, attemptId: attempt.attemptId },
+				ctx,
+				verdict.outcome,
+				error,
+				conversationWriter,
+			),
 		);
 	}
-	await publishTerminalEvent();
-	await submissions.finalizeSubmissionSettlement(attempt, eventKey, {
-		...(outcome === 'completed' || error === undefined
-			? {}
-			: { errorMessage: error instanceof Error ? error.message : String(error) }),
-	});
+	const host = await reserveSettlement(
+		submissions,
+		submission.kind,
+		attempt,
+		ctx,
+		verdict.outcome,
+		error,
+		conversationWriter,
+	);
+	reservations.push(host);
+	const records = host.status === 'refused' ? [] : [...options.leading];
+	for (const reserved of reservations) {
+		if (reserved.status !== 'reserved') continue;
+		if (!(await reserved.writer.getRecord(reserved.recordId))) records.push(reserved.record);
+	}
+	if (records.length > 0) await options.write(records);
+	for (const reserved of reservations) {
+		if (reserved.status === 'reserved') await reserved.finish();
+	}
 }
 
 /**

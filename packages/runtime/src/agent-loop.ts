@@ -559,6 +559,15 @@ export class AgentLoop {
 	}
 
 	/**
+	 * How the harness input `inputId` of the loop's thread ended. Waits until
+	 * it ends; see `HarnessSession.settled`.
+	 */
+	async settled(inputId: string) {
+		const session = await this.session();
+		return session.settled(inputId);
+	}
+
+	/**
 	 * In the `recover` hook of a durable binding: the recovered turn runs the
 	 * calls of `assistant` again that have no outcome in `outcomes`. The batch
 	 * then ends with the loop's events, as a live batch does. Each call in
@@ -704,6 +713,13 @@ export class AgentLoop {
 			await this.finishAfterCancel(run);
 			return;
 		}
+		// The harness session closed under the run (its host stopped): the run
+		// fails, and a later run opens the thread again.
+		if (failure && operation.status() === 'cancelled') {
+			this.harnessSession = undefined;
+			run.failure ??= failure;
+			return;
+		}
 		// A cut batch that no later model call closed: the harness ended the turn.
 		if (run.batch && !run.failure) await this.guard(run, () => this.finishBatch(run, new Map()));
 		// The harness refused the input before any model call (for example `nothing_to_continue`).
@@ -780,8 +796,14 @@ export class AgentLoop {
 			// pi's loop had no iteration limit.
 			agentLoopStrategy: () => true,
 			durability: {
-				maxAttempts: 10,
-				timeoutMs: 3_600_000,
+				// On a durable binding, Flue's submission ledger decides a
+				// recovered input in the `recover` hook, by its own attempt
+				// budget and deadline. The harness limits never decide first:
+				// no attempt limit, and no time limit (which would also abort
+				// a live turn).
+				...(durable
+					? { maxAttempts: Number.MAX_SAFE_INTEGER }
+					: { maxAttempts: 10, timeoutMs: 3_600_000 }),
 				// A cut answer keeps its calls; each gets this error result, and the model goes on.
 				truncatedToolResult: ({ toolName }) => truncatedCallText(toolName),
 				// A cut `replay: 'never'` call gets Flue's interrupted marker.
