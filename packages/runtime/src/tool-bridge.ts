@@ -33,7 +33,7 @@ export interface HarnessToolOptions {
 
 /**
  * The TanStack tool for `tool`. The model sees the tool's content: one text
- * block as a string, and anything else as content parts.
+ * block as its exact text, and anything else as content parts.
  */
 export function toHarnessTool(tool: AgentTool, options: HarnessToolOptions = {}) {
 	const definition = toolDefinition({
@@ -72,9 +72,14 @@ function toFlueStep(toolName: string, step: DurableToolContext['step']) {
 	};
 }
 
+/**
+ * The tool's return value for TanStack. TanStack parses a string result as
+ * JSON when it can, so one text block goes out as a JSON string: the parse
+ * gives back the exact text.
+ */
 function toModelOutput(content: readonly (TextContent | ImageContent)[]) {
 	const [only] = content;
-	if (content.length === 1 && only?.type === 'text') return only.text;
+	if (content.length === 1 && only?.type === 'text') return JSON.stringify(only.text);
 	return content.map((block) =>
 		block.type === 'text'
 			? { type: 'text' as const, content: block.text }

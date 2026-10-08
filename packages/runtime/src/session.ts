@@ -7,7 +7,8 @@ import { modelContextCompactionFields } from './model-request-info.ts';
  * `FlueSession` contract.
  */
 
-import { defineHarness } from '@tanstack/ai-harness';
+import type { ModelMessage } from '@tanstack/ai';
+import { defineHarness, type JoinContext } from '@tanstack/ai-harness';
 import type * as v from 'valibot';
 import {
 	abandonToolOnAbort,
@@ -57,6 +58,7 @@ import {
 	isAssistantContextOverflow,
 	prepareCompaction,
 	shouldCompact,
+	toHarnessTranscript,
 } from './compaction.ts';
 import { isWorkspaceSkill, skillsDirIn } from './context.ts';
 import {
@@ -72,6 +74,7 @@ import {
 	encodeCanonicalId,
 	generateConversationEntryId,
 	generateConversationRecordId,
+	type HarnessLogRecord,
 	RESERVED_SIGNAL_TYPES,
 	toolStepRecordId,
 } from './conversation-records.ts';
@@ -82,6 +85,7 @@ import {
 	type IndexedConversationRecord,
 	type InProgressAssistantMessage,
 	type ReducedConversationState,
+	reduceConversationRecords,
 	toolOutcomeKey,
 	toolResultEntryId,
 } from './conversation-reducer.ts';
@@ -260,6 +264,8 @@ const MAX_TRANSIENT_MODEL_RETRIES = 3;
  * unconditionally.
  */
 const MAX_AGENT_FINISH_CYCLES = 32;
+/** Reminders after an answer without `finish` or `give_up`, in one structured-result call. */
+const MAX_RESULT_FOLLOWUPS = 32;
 const TRANSIENT_MODEL_RETRY_BASE_DELAY_MS = 2_000;
 
 type TurnInputMessage = Extract<
@@ -770,6 +776,20 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * path. The next turn of the input sends it (see `startInputTurn`).
 	 */
 	private pendingHarnessInput: { entryId: string; isSignal: boolean } | undefined;
+	/**
+	 * On the durable path: claimed deliveries sent to the harness as steers,
+	 * by submission id, until they join the running turn.
+	 */
+	private harnessJoins = new Map<string, AgentSubmission>();
+	/** Deliveries that joined the running turn, until their join append landed. */
+	private joinedDeliveries: AgentSubmission[] = [];
+	/**
+	 * On the durable path: the error of a `useAgentFinish` cycle that ran in
+	 * the harness `beforeFinish`. The finish phase throws it after the turn.
+	 */
+	private finishCycleFailure: { error: unknown } | undefined;
+	/** On the durable path: the structured-result call that waits for `finish` or `give_up`. */
+	private resultReminder: { isPending: () => boolean; followUps: number } | undefined;
 	private canonicalAssistant:
 		| {
 				messageId: string;
@@ -1674,6 +1694,17 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		if (await this.hasPendingSteeredContinuation(submissionId)) {
 			await driveContinuation();
 		}
+		if (this.harnessHost) {
+			// The harness ran the finish cycles in `beforeFinish`. A delivery
+			// that came after the last turn boundary runs as a new turn of the
+			// response, with its submission id as the input id.
+			this.throwFinishCycleFailure();
+			while ((await this.applyQueuedJoins()) > 0) {
+				await driveContinuation();
+				this.throwFinishCycleFailure();
+			}
+			return;
+		}
 		for (;;) {
 			if ((await this.applyQueuedJoins()) > 0) {
 				await driveContinuation();
@@ -1853,6 +1884,205 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	private steerSignal(message: AgentMessage): void {
 		if (this.harnessHost) this.agentLoop.state.messages.push(message);
 		else this.agentLoop.steer(message);
+	}
+
+	/**
+	 * Turn-boundary join on the durable path: claim the joinable queued
+	 * prefix (the store applies Flue's join rule) and send each user delivery
+	 * to the harness as a steer, with its submission id as the input id. It
+	 * joins the running turn before the next model call (see
+	 * `joinHarnessInputs`). A signal delivery, and a delivery whose input
+	 * record exists already, join as on the path without a host: the host's
+	 * `project` fold puts a signal record in the transcript.
+	 */
+	private async steerQueuedJoins() {
+		const source = this.activeJoinSource;
+		const signal = this.activeJoinSignal;
+		if (!source || !signal || !this.activeSubmissionId) return;
+		for (const submission of await source.claim()) {
+			if (signal.aborted) throw abortErrorFor(signal);
+			const input = submission.input;
+			const entryId = submissionEntryId(input.kind, input.submissionId);
+			const applied = await this.conversationWriter.hasConversationEntry(
+				this.conversationId,
+				entryId,
+			);
+			if (input.message.kind !== 'user' || applied) {
+				await this.applyJoinedDelivery(submission, source, signal);
+				continue;
+			}
+			const message = await this.previewDeliveryMessage(input);
+			this.harnessJoins.set(input.submissionId, submission);
+			this.agentLoop.steer(message, { inputId: input.submissionId });
+		}
+	}
+
+	/** The message that the input record of a delivery projects to, before the record exists. */
+	private async previewDeliveryMessage(input: AgentSubmissionInput) {
+		const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
+		const record = await this.buildSubmissionInputRecord(input, parentId, {
+			asJoinedDelivery: true,
+		});
+		const preview = reduceConversationRecords(await this.conversationWriter.loadReducedState(), [
+			record,
+		]).conversations.get(this.conversationId);
+		if (!preview) throw new Error('[flue] Canonical conversation is missing.');
+		const entryId = submissionEntryId(input.kind, input.submissionId);
+		const entry = (await this.contextEntriesOf(preview)).findLast(
+			(candidate) => candidate.sourceEntry.id === entryId,
+		);
+		if (!entry) throw new Error('[flue] A joined delivery is missing from the projected context.');
+		return entry.message;
+	}
+
+	/** The model context entries of `conversation`, with its attachments resolved. */
+	private async contextEntriesOf(conversation: ReducedConversationState) {
+		const resolved = await this.resolveCanonicalContextAttachments(conversation);
+		return buildConversationContextEntries(conversation, {
+			resolveAttachment: (attachment) => {
+				const image = resolved.get(attachment.id);
+				if (!image) throw new AttachmentNotAvailableError({ attachmentId: attachment.id });
+				return image;
+			},
+		});
+	}
+
+	/**
+	 * The harness `onJoin`: the input records of the deliveries that join
+	 * now. They land in the append that joins the steers, so the transcript
+	 * and Flue's records never disagree about a join.
+	 */
+	private async joinHarnessInputs(ctx: JoinContext) {
+		const records: HarnessLogRecord[] = [];
+		let parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
+		for (const { inputId } of ctx.inputs) {
+			const submission = this.harnessJoins.get(inputId);
+			if (!submission) continue;
+			this.harnessJoins.delete(inputId);
+			const record = await this.buildSubmissionInputRecord(submission.input, parentId, {
+				asJoinedDelivery: true,
+			});
+			await this.conversationWriter.append([record], {
+				...this.canonicalAppendOptions(),
+				stage: (staged) => records.push(...staged),
+			});
+			parentId = submissionEntryId(submission.input.kind, submission.submissionId);
+			this.joinedDeliveries.push(submission);
+		}
+		return records.length > 0 ? { records } : undefined;
+	}
+
+	/**
+	 * After the join append landed: each joined delivery runs its start
+	 * hooks, and its store row moves from `joining` to `joined`.
+	 */
+	private async finishHarnessJoins() {
+		const joined = this.joinedDeliveries;
+		this.joinedDeliveries = [];
+		const source = this.activeJoinSource;
+		const signal = this.activeJoinSignal;
+		if (!source || !signal) return;
+		for (const submission of joined) {
+			this.advanceDelivery?.(submission.input.message);
+			await this.runAgentStartHooks(signal, submission.submissionId, { joined: true });
+			await source.finalize(submission.submissionId);
+		}
+	}
+
+	/**
+	 * The harness `beforeFinish` on the durable path. A structured-result
+	 * call that waits for `finish` or `give_up` sends the model the reminder
+	 * as an ephemeral message: no store keeps it. Else the `useAgentFinish`
+	 * cycle runs.
+	 */
+	private async harnessBeforeFinish() {
+		const reminder = this.resultReminder;
+		if (reminder) {
+			if (!reminder.isPending() || reminder.followUps >= MAX_RESULT_FOLLOWUPS) return undefined;
+			reminder.followUps += 1;
+			return { ephemeral: [{ role: 'user' as const, content: buildResultFollowUpPrompt() }] };
+		}
+		try {
+			return await this.runHarnessFinishCycle();
+		} catch (error) {
+			this.finishCycleFailure = { error };
+			return undefined;
+		}
+	}
+
+	/**
+	 * One `useAgentFinish` cycle in the harness `beforeFinish`. When the hooks
+	 * append signals, the signal records, the state writes, and the cycle
+	 * record land in one append, and the host's `project` fold gives the
+	 * model the signals: the turn goes on. The cycle count comes from the
+	 * records, so the limit of {@link MAX_AGENT_FINISH_CYCLES} survives a
+	 * restart.
+	 */
+	private async runHarnessFinishCycle() {
+		const submissionId = this.activeSubmissionId;
+		const signal = this.activeJoinSignal;
+		const hooks = this.outputChannel?.agentFinishes ?? [];
+		if (!submissionId || !signal || hooks.length === 0 || this.finishCycleFailure) return undefined;
+		const cycle = await this.countAgentFinishCycles(submissionId);
+		const toolCalls = await this.collectResponseToolCalls(submissionId);
+		const before = this.pendingSignalAppends.length;
+		for (const [index, hook] of hooks.entries()) {
+			await this.executeAgentFinishHook(index, hook, toolCalls, signal);
+		}
+		const stateRecords = this.drainHookStateRecords();
+		if (this.pendingSignalAppends.length === before) {
+			if (stateRecords.length > 0) await this.appendCanonical(stateRecords);
+			return undefined;
+		}
+		if (cycle >= MAX_AGENT_FINISH_CYCLES) {
+			throw new Error(
+				`[flue] useAgentFinish appended a continuation signal after ${MAX_AGENT_FINISH_CYCLES} continued cycles in one response — a runaway loop. The response is failing loudly instead of settling as a success; if the model cannot satisfy the check, make the hook give up explicitly (log and return) after a bounded number of attempts.`,
+			);
+		}
+		const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
+		const { records } = this.drainSignalAppendRecords(parentId);
+		const staged: HarnessLogRecord[] = [];
+		await this.conversationWriter.append(
+			[
+				...records,
+				...stateRecords,
+				{
+					...this.canonicalEnvelope('agent_finish_cycle'),
+					type: 'agent_finish_cycle',
+				},
+			],
+			{ ...this.canonicalAppendOptions(), stage: (batch) => staged.push(...batch) },
+		);
+		return { records: staged };
+	}
+
+	private throwFinishCycleFailure() {
+		const failure = this.finishCycleFailure;
+		this.finishCycleFailure = undefined;
+		if (failure) throw failure.error;
+	}
+
+	/**
+	 * The harness transcript after the latest compaction, when the transcript
+	 * does not have it yet: the canonical context in TanStack's form, with the
+	 * summary message under the compaction's entry id. The agent loop gives
+	 * it to the next model call, and the harness saves it as the transcript.
+	 * The rewrite comes from the records only, so a host that stopped before
+	 * it rewrites at its next model call.
+	 */
+	private async compactedTranscript(transcript: readonly ModelMessage[]) {
+		if (!this.contextCompacted) return undefined;
+		const conversation = await this.requireConversation();
+		const compaction = getLatestConversationCompaction(conversation);
+		if (!compaction || transcript.some((message) => message.id === compaction.id)) return undefined;
+		const entries = await this.contextEntriesOf(conversation);
+		return toHarnessTranscript(
+			entries.map((entry) => ({
+				message: entry.message,
+				...(entry.sourceEntry === compaction ? { id: compaction.id } : {}),
+			})),
+			this.agentLoop.state.model,
+		);
 	}
 
 	/**
@@ -2418,6 +2648,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 							logId: options.harnessHost.logId,
 						},
 						onToolCall: (call: HarnessToolCall) => this.harnessToolCalls.set(call.toolCallId, call),
+						canJoin: () => this.activeJoinSignal?.aborted !== true,
+						onJoin: (ctx: JoinContext) => this.joinHarnessInputs(ctx),
+						onJoined: () => this.finishHarnessJoins(),
+						beforeFinish: () => this.harnessBeforeFinish(),
+						rewriteContext: (messages: readonly ModelMessage[]) =>
+							this.compactedTranscript(messages),
 					}
 				: {}),
 			// Render-per-turn (function agents): runs after the turn_end handler
@@ -2879,7 +3115,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// poll and reach the model at the next turn start — and when the
 					// model would otherwise stop, the non-empty steering queue keeps
 					// the loop running to answer them.
-					await this.applyQueuedJoins();
+					if (this.harnessHost) await this.steerQueuedJoins();
+					else await this.applyQueuedJoins();
 					this.emit({
 						type: 'turn_messages',
 						turnId,
@@ -5206,7 +5443,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			const overflow =
 				assistant !== undefined &&
 				isAssistantContextOverflow(assistant, this.agentLoop.state.model.contextWindow ?? 0);
-			const retryable = !overflow && assistant !== undefined && isRetryableModelError(assistant);
+			// On the durable path, the harness retries a transient error inside
+			// the turn (see `retryModelErrors`), so Flue does not retry it again.
+			const retryable =
+				!this.harnessHost &&
+				!overflow &&
+				assistant !== undefined &&
+				isRetryableModelError(assistant);
 
 			if (turnCompleted && !overflow && !retryable) {
 				// The turn the previous iteration ran settled. This exits before
@@ -6076,6 +6319,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// whose context is rebuilt from canonical records.
 					this.pendingSignalAppends = [];
 					this.pendingHarnessInput = undefined;
+					this.harnessJoins.clear();
+					this.joinedDeliveries = [];
+					this.finishCycleFailure = undefined;
 					this.agentLoop.clearSteeringQueue();
 					// Detach the data-write queue tail too: its closures no-op once
 					// the attempt id clears below, and a rejected tail must not leak
@@ -6227,8 +6473,16 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		errorLabel: string,
 		signal: AbortSignal,
 	): Promise<T> {
-		const MAX_FOLLOWUPS = 32;
-		for (let attempt = 0; attempt <= MAX_FOLLOWUPS; attempt++) {
+		if (this.harnessHost) {
+			return this.runWithResultToolsOnHarness(
+				initialPrompt,
+				initialImages,
+				bundle,
+				errorLabel,
+				signal,
+			);
+		}
+		for (let attempt = 0; attempt <= MAX_RESULT_FOLLOWUPS; attempt++) {
 			if (signal.aborted) throw abortErrorFor(signal);
 			await this.runModelTurnWithRecovery({
 				start: () =>
@@ -6257,7 +6511,45 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			}
 		}
 		throw new ResultUnavailableError(
-			`Agent did not call \`finish\` or \`give_up\` after ${MAX_FOLLOWUPS + 1} attempts.`,
+			`Agent did not call \`finish\` or \`give_up\` after ${MAX_RESULT_FOLLOWUPS + 1} attempts.`,
+			this.getAssistantText(),
+		);
+	}
+
+	/**
+	 * {@link runWithResultTools} on the durable path: one harness turn. While
+	 * the outcome waits, the harness `beforeFinish` sends the reminder as an
+	 * ephemeral message (see `harnessBeforeFinish`), so the transcript and
+	 * the log never keep it.
+	 */
+	private async runWithResultToolsOnHarness<T>(
+		initialPrompt: string,
+		initialImages: ImageContent[],
+		bundle: ResultToolBundle<T>,
+		errorLabel: string,
+		signal: AbortSignal,
+	) {
+		if (signal.aborted) throw abortErrorFor(signal);
+		this.resultReminder = {
+			isPending: () => bundle.getOutcome().type === 'pending',
+			followUps: 0,
+		};
+		try {
+			await this.runModelTurnWithRecovery({
+				start: () => this.agentLoop.prompt(initialPrompt, initialImages),
+				signal,
+			});
+		} finally {
+			this.resultReminder = undefined;
+		}
+		this.throwIfError(errorLabel);
+		const outcome = bundle.getOutcome();
+		if (outcome.type === 'finished') return outcome.value;
+		if (outcome.type === 'gave_up') {
+			throw new ResultUnavailableError(outcome.reason, this.getAssistantText());
+		}
+		throw new ResultUnavailableError(
+			`Agent did not call \`finish\` or \`give_up\` after ${MAX_RESULT_FOLLOWUPS + 1} attempts.`,
 			this.getAssistantText(),
 		);
 	}

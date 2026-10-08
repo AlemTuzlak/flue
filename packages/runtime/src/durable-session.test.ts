@@ -192,8 +192,7 @@ describe('a Flue session on the instance harness host', () => {
 		expect(await storedTranscript(streams, conversationId)).toEqual([
 			{ role: 'user', content: 'How many items?' },
 			{ role: 'assistant', content: null, toolCalls: [['call_1', 'count']] },
-			// TanStack parses a JSON tool result: Flue's `"counted"` is `counted` here.
-			{ role: 'tool', content: 'counted', toolCallId: 'call_1' },
+			{ role: 'tool', content: '"counted"', toolCallId: 'call_1' },
 			{ role: 'assistant', content: 'There are 3 items.' },
 		]);
 	});
