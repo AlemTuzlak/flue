@@ -2,10 +2,14 @@
  * The agent loop of a Flue session, run by TanStack's `HarnessSession`.
  *
  * The harness runs each turn: the model calls, the tool calls, and the
- * continuation when steered messages wait. Flue keeps the transcript
- * (`state.messages`), so each model call sends the context that Flue's
- * records hold. The listeners get pi's loop events in pi's order, and the
- * session builds its records and its observations from them.
+ * continuation when steered messages wait. The listeners get pi's loop
+ * events in pi's order, and the session builds its records and its
+ * observations from them.
+ *
+ * With a durable binding, the loop runs on a thread of the instance host,
+ * and the harness transcript is the model context. Without one, the loop
+ * runs on an in-memory host, and each model call sends the context that
+ * Flue's own transcript (`state.messages`) holds.
  */
 import {
 	type AnyTextAdapter,
@@ -16,7 +20,16 @@ import {
 	type StreamChunk,
 } from '@tanstack/ai';
 import { planMidConversationChanges } from '@tanstack/ai/adapter-internals';
-import { createHarnessHost, defineHarness, type HarnessSession } from '@tanstack/ai-harness';
+import {
+	createHarnessHost,
+	defineHarness,
+	type HarnessSession,
+	type HarnessTurnOptions,
+	type JoinContext,
+	type ModelErrorContext,
+	type RecoverHook,
+	type UserInput,
+} from '@tanstack/ai-harness';
 import type {
 	AgentMessage,
 	AgentTool,
@@ -32,11 +45,16 @@ import type {
 import {
 	type AssistantBlockEvent,
 	AssistantStreamAssembler,
+	fromModelMessage,
 	modelInfo,
+	toModelContext,
 	toModelRequest,
+	toUserInput,
 } from './model-messages.ts';
 import type { FlueModel } from './providers/provider.ts';
-import { toHarnessTool } from './tool-bridge.ts';
+import type { createInstanceHarnessHost } from './runtime/instance-harness-host.ts';
+import { isRetryableModelError } from './submission-state.ts';
+import { type HarnessToolOptions, toHarnessTool } from './tool-bridge.ts';
 
 /** A finished turn: the assistant message and the results of its tool calls. */
 export interface CompletedTurn {
@@ -83,6 +101,24 @@ export interface ModelCallRequest {
 	thinkingLevel: ThinkingLevel;
 }
 
+/** The thread of a loop on the durable host of its agent instance. */
+export interface AgentLoopDurableBinding {
+	/** The host from `createInstanceHarnessHost`. */
+	host: ReturnType<typeof createInstanceHarnessHost>;
+	/** The conversation id. */
+	threadId: string;
+	/** The instance stream path: the log of the host. */
+	logId: string;
+}
+
+/** Options of one harness input of the loop. */
+export interface AgentLoopInputOptions {
+	/** The input id. The loop makes one when it is not set. */
+	inputId?: string;
+	/** Messages for the model calls of this input only. No store keeps them. */
+	ephemeral?: readonly ModelMessage[];
+}
+
 export interface AgentLoopOptions {
 	initialState: {
 		systemPrompt: string;
@@ -99,6 +135,66 @@ export interface AgentLoopOptions {
 	onModelRequest?(request: ModelCallRequest): void;
 	/** Runs before every turn of a run after the first, with the turn before it. */
 	prepareNextTurn?(turn: CompletedTurn): Promise<unknown> | unknown;
+	/**
+	 * The durable thread of the loop. Without it, the loop runs on an
+	 * in-memory host, and the model context comes from `state.messages`.
+	 */
+	durable?: AgentLoopDurableBinding;
+	/** How an input that a crashed host left recovers. See `durability.recover`. */
+	recover?: RecoverHook;
+	/** Whether a waiting input joins the running turn now. */
+	canJoin?: HarnessTurnOptions['canJoin'];
+	/** Runs before the model call that joined inputs reach. */
+	onJoin?: HarnessTurnOptions['onJoin'];
+	/**
+	 * What a failed model call does. The default on a durable binding is
+	 * {@link retryModelErrors}. Without a binding, a failed call ends the run.
+	 */
+	onModelError?: HarnessTurnOptions['onModelError'];
+	/** Runs before each bridged tool call, with its step and its staged records. */
+	onToolCall?: HarnessToolOptions['onCall'];
+	/** Gets the whole result of each bridged tool call. */
+	onToolResult?: HarnessToolOptions['onResult'];
+}
+
+/** Flue's retries of one failed model call, after the last finished tool phase. */
+const MAX_MODEL_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 2_000;
+
+/**
+ * Flue's `turn.onModelError`: retry a model error that
+ * `isRetryableModelError` accepts, at most 3 times after the last finished
+ * tool phase. The backoff is `2000 ms * 2^(n-1)` for retry `n`, times a
+ * jitter from 0.75 to 1.0. The text of the failed call is dropped.
+ */
+export async function retryModelErrors(ctx: ModelErrorContext) {
+	if (ctx.retries >= MAX_MODEL_RETRIES || !isRetryableModelError(ctx.error)) return undefined;
+	const jitter = 0.75 + Math.random() * 0.25;
+	await abortableDelay(Math.round(RETRY_BASE_DELAY_MS * 2 ** ctx.retries * jitter), ctx.signal);
+	if (ctx.signal.aborted) return undefined;
+	return 'retry' as const;
+}
+
+function abortableDelay(ms: number, signal: AbortSignal) {
+	return new Promise<void>((resolve) => {
+		if (signal.aborted) return resolve();
+		const done = () => {
+			clearTimeout(timer);
+			signal.removeEventListener('abort', done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal.addEventListener('abort', done, { once: true });
+	});
+}
+
+/** The result text of a tool call of an answer that hit the output token limit. */
+function truncatedCallText(toolName: string) {
+	return `Tool call "${toolName}" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`;
+}
+
+function createInputId() {
+	return `flue:${crypto.randomUUID()}`;
 }
 
 /** pi's leading system message: the prompt and the tools the model may call. */
@@ -155,6 +251,8 @@ interface ToolBatch {
 	sequential: boolean;
 	/** A `length` stop: the arguments may be cut, so no call runs. */
 	truncated: boolean;
+	/** The calls of a cut batch that the harness closed with an error result. */
+	closed: Set<string>;
 	finished: Map<string, { result: AgentToolResult; isError: boolean }>;
 	/** Result messages that were already emitted (sequential batches emit each one at once). */
 	emitted: Set<string>;
@@ -162,9 +260,18 @@ interface ToolBatch {
 	turns: PromiseWithResolvers<void>[];
 }
 
+/** The harness input that starts a run. */
+type RunInput =
+	| { kind: 'prompt'; message: UserInput; inputId: string; ephemeral?: readonly ModelMessage[] }
+	| { kind: 'continue'; inputId: string; ephemeral?: readonly ModelMessage[] };
+
 /** The state of one run: one `prompt` or `continue`. */
 interface LoopRun {
 	signal: AbortSignal;
+	/** Resolves when the run's input reached the harness, so a steer joins it. */
+	started: PromiseWithResolvers<void>;
+	/** Steers sent to the harness that it has not stored yet. */
+	admissions: Promise<unknown>[];
 	adapter: AnyTextAdapter | undefined;
 	/** The mid-conversation record of the model call in flight. */
 	midConversationChange: MidConversationChange | undefined;
@@ -213,6 +320,8 @@ export class AgentLoop {
 	 */
 	private readonly midConversationChanges = new WeakMap<AgentMessage, MidConversationChange>();
 	private readonly harnessTools = new WeakMap<AgentTool, ReturnType<typeof toHarnessTool>>();
+	/** Steered messages sent to the harness, by input id, until they join a model call. */
+	private readonly joining = new Map<string, AgentMessage>();
 
 	constructor(private readonly options: AgentLoopOptions) {
 		let tools = options.initialState.tools.slice();
@@ -252,8 +361,17 @@ export class AgentLoop {
 		return () => this.listeners.delete(listener);
 	}
 
-	/** Queue a message for the next model call of the running turn. */
-	steer(message: AgentMessage) {
+	/**
+	 * Queue a message for the next model call of the running turn. On a
+	 * durable binding, a steer during a run goes to the harness as an input
+	 * with `busy: 'steer'`, and joins the next model call.
+	 */
+	steer(message: AgentMessage, options: { inputId?: string } = {}) {
+		const run = this.run;
+		if (this.options.durable && run) {
+			this.sendSteer(run, message, options.inputId ?? createInputId());
+			return;
+		}
 		this.steering.push(message);
 	}
 
@@ -270,11 +388,18 @@ export class AgentLoop {
 		return this.active?.promise ?? Promise.resolve();
 	}
 
-	async prompt(input: string | AgentMessage[], images?: ImageContent[]) {
-		if (this.active)
-			throw new Error(
-				'Agent is already processing a prompt. Use steer() to queue messages, or wait for completion.',
-			);
+	/**
+	 * Run a turn for `input`. The harness gets the real user message, with
+	 * the images as content parts, as an input with `busy: 'steer'`.
+	 */
+	async prompt(
+		input: string | AgentMessage[],
+		images?: ImageContent[],
+		options: AgentLoopInputOptions = {},
+	) {
+		this.assertIdle(
+			'Agent is already processing a prompt. Use steer() to queue messages, or wait for completion.',
+		);
 		const messages: AgentMessage[] =
 			typeof input === 'string'
 				? [
@@ -285,24 +410,76 @@ export class AgentLoop {
 						},
 					]
 				: input;
-		await this.runLoop(messages, false);
+		const [first, ...rest] = messages;
+		if (!first) throw new Error('No messages to prompt with');
+		const durable = this.options.durable;
+		// The harness takes one message per input. On a binding, the others join as steers.
+		if (durable) this.steering.unshift(...rest);
+		// Without a binding, the context comes from `state.messages`, so any message can open the turn.
+		const isInput = durable || first.role === 'user' || first.role === 'signal';
+		await this.runLoop(durable ? [first] : messages, false, {
+			kind: 'prompt',
+			message: isInput ? toUserInput(first) : 'Continue.',
+			inputId: options.inputId ?? createInputId(),
+			...(options.ephemeral ? { ephemeral: options.ephemeral } : {}),
+		});
 	}
 
 	/** Continue from the transcript. The last message must not be an assistant message, unless steered messages wait. */
 	async continue() {
-		if (this.active)
-			throw new Error('Agent is already processing. Wait for completion before continuing.');
+		this.assertIdle('Agent is already processing. Wait for completion before continuing.');
 		const messages = this.state.messages;
 		const last = messages.at(-1);
 		if (!last || messages.every((message) => message.role === 'system'))
 			throw new Error('No messages to continue from');
 		if (last.role === 'assistant') {
 			const queued = this.drainSteering();
-			if (queued.length === 0) throw new Error('Cannot continue from message role: assistant');
-			await this.runLoop(queued, true);
+			const [first, ...rest] = queued;
+			if (!first) throw new Error('Cannot continue from message role: assistant');
+			if (this.options.durable) {
+				this.steering.unshift(...rest);
+				await this.runLoop([first], false, {
+					kind: 'prompt',
+					message: toUserInput(first),
+					inputId: createInputId(),
+				});
+				return;
+			}
+			await this.runLoop(queued, true, this.legacyContinueInput());
 			return;
 		}
-		await this.runLoop([], false);
+		if (this.options.durable) {
+			await this.continueTurn();
+			return;
+		}
+		await this.runLoop([], false, this.legacyContinueInput());
+	}
+
+	/**
+	 * Run a turn from the harness transcript, with no new message. The
+	 * harness refuses it unless the transcript ends with a user or a tool
+	 * message.
+	 */
+	async continueTurn(options: AgentLoopInputOptions = {}) {
+		this.assertIdle('Agent is already processing. Wait for completion before continuing.');
+		await this.runLoop([], false, {
+			kind: 'continue',
+			inputId: options.inputId ?? createInputId(),
+			...(options.ephemeral ? { ephemeral: options.ephemeral } : {}),
+		});
+	}
+
+	private assertIdle(message: string) {
+		if (this.active) throw new Error(message);
+	}
+
+	/**
+	 * A continue without a binding. Its context comes from `state.messages`,
+	 * which the harness transcript does not hold, so it opens the turn with a
+	 * prompt, as the harness transcript can end with an answer.
+	 */
+	private legacyContinueInput(): RunInput {
+		return { kind: 'prompt', message: 'Continue.', inputId: createInputId() };
 	}
 
 	private drainSteering() {
@@ -311,13 +488,38 @@ export class AgentLoop {
 		return drained;
 	}
 
-	private async runLoop(initial: AgentMessage[], skipInitialPoll: boolean) {
+	/** Send a steered message to the harness. It joins the running turn. */
+	private sendSteer(run: LoopRun, message: AgentMessage, inputId: string) {
+		this.joining.set(inputId, message);
+		const input = toUserInput(message);
+		const admission = run.started.promise.then(async () => {
+			const session = await this.session();
+			const operation = session.prompt(input, { inputId, busy: 'steer' });
+			// The steer settles with the turn it joins; the run reports that turn.
+			operation.then(undefined, () => undefined);
+			await operation.receipt;
+		});
+		run.admissions.push(admission.catch(() => undefined));
+	}
+
+	/** Wait until the harness stored the steers sent so far, so the turn can join them. */
+	private async flushAdmissions(run: LoopRun) {
+		while (run.admissions.length > 0) {
+			const admissions = run.admissions;
+			run.admissions = [];
+			await Promise.all(admissions);
+		}
+	}
+
+	private async runLoop(initial: AgentMessage[], skipInitialPoll: boolean, input: RunInput) {
 		const controller = new AbortController();
 		const done = Promise.withResolvers<void>();
 		this.active = { promise: done.promise, controller };
 		this.state.errorMessage = undefined;
 		const run: LoopRun = {
 			signal: controller.signal,
+			started: Promise.withResolvers<void>(),
+			admissions: [],
 			adapter: undefined,
 			midConversationChange: undefined,
 			pending: [],
@@ -336,13 +538,19 @@ export class AgentLoop {
 			await this.emit({ type: 'agent_start' });
 			await this.emit({ type: 'turn_start' });
 			for (const message of initial) await this.emitMessage(message);
-			run.pending = skipInitialPoll ? [] : this.drainSteering();
-			await this.runTurn(run);
+			const queued = skipInitialPoll ? [] : this.drainSteering();
+			if (this.options.durable)
+				for (const message of queued) this.sendSteer(run, message, createInputId());
+			else run.pending = queued;
+			await this.runTurn(run, input);
 			if (run.failure) throw run.failure.error;
 			await this.emit({ type: 'agent_end', messages: run.newMessages });
 		} catch (error) {
 			await this.failRun(error, controller.signal.aborted);
 		} finally {
+			run.started.resolve();
+			// A steer that joined no model call of this run runs as its own harness turn.
+			this.joining.clear();
 			this.run = undefined;
 			this.active = undefined;
 			done.resolve();
@@ -350,61 +558,114 @@ export class AgentLoop {
 	}
 
 	/** One harness turn. The middleware below turns its hooks into the loop's events. */
-	private async runTurn(run: LoopRun) {
+	private async runTurn(run: LoopRun, input: RunInput) {
 		const session = await this.session();
 		const adapter = await this.options.createAdapter(this.state.model, run.signal);
 		run.adapter = adapter;
-		const operation = session.prompt(
-			// The model context comes from `state.messages` (see `onConfig`); this text only opens the turn.
-			'Continue.',
-			{
-				overrides: {
-					adapter,
-					promptCache: { key: this.options.sessionId },
-				},
-			},
-		);
+		const overrides = {
+			adapter,
+			promptCache: { key: this.options.sessionId },
+		};
+		const ephemeral = input.ephemeral ? { ephemeral: input.ephemeral } : {};
+		const operation =
+			input.kind === 'prompt'
+				? session.prompt(input.message, {
+						inputId: input.inputId,
+						busy: 'steer',
+						overrides,
+						...ephemeral,
+					})
+				: session.continue({ inputId: input.inputId, overrides, ...ephemeral });
+		run.started.resolve();
 		const cancel = () => void operation.cancel();
 		run.signal.addEventListener('abort', cancel, { once: true });
+		let failure: { error: unknown } | undefined;
 		try {
 			await operation;
-		} catch {
+		} catch (error) {
 			// The run's events already tell how it ended; see `finishAfterCancel`.
+			failure = { error };
 		} finally {
 			run.signal.removeEventListener('abort', cancel);
 		}
-		if (run.signal.aborted) await this.finishAfterCancel(run);
+		if (run.signal.aborted) {
+			await this.finishAfterCancel(run);
+			return;
+		}
+		// A cut batch that no later model call closed: the harness ended the turn.
+		if (run.batch && !run.failure) await this.guard(run, () => this.finishBatch(run, new Map()));
+		// The harness refused the input before any model call (for example `nothing_to_continue`).
+		if (failure && run.firstCall) run.failure ??= failure;
 	}
 
 	private session() {
-		this.harnessSession ??= createHarnessHost().open(
-			defineHarness({
-				name: 'flue/session',
-				middleware: [this.middleware()],
-				// pi's loop had no iteration limit.
-				agentLoopStrategy: () => true,
-				turn: {
-					beforeFinish: () => this.beforeFinish(),
-					maxFinishCycles: Number.MAX_SAFE_INTEGER,
-				},
-			}),
-			{ threadId: this.options.sessionId },
-		);
+		this.harnessSession ??= this.openSession();
 		return this.harnessSession;
+	}
+
+	/** The loop's thread: on the durable host of the binding, or on an in-memory host. */
+	private openSession() {
+		const durable = this.options.durable;
+		const host = durable?.host ?? createHarnessHost();
+		const { recover, canJoin, onModelError } = this.options;
+		const modelErrors = onModelError ?? (durable ? retryModelErrors : undefined);
+		const harness = defineHarness({
+			name: 'flue/session',
+			middleware: [this.middleware()],
+			// pi's loop had no iteration limit.
+			agentLoopStrategy: () => true,
+			durability: {
+				maxAttempts: 10,
+				timeoutMs: 3_600_000,
+				// A cut answer keeps its calls; each gets this error result, and the model goes on.
+				truncatedToolResult: ({ toolName }) => truncatedCallText(toolName),
+				...(recover ? { recover } : {}),
+			},
+			turn: {
+				beforeFinish: () => this.beforeFinish(),
+				maxFinishCycles: Number.MAX_SAFE_INTEGER,
+				onJoin: (ctx) => this.joined(ctx),
+				...(canJoin ? { canJoin } : {}),
+				...(modelErrors ? { onModelError: modelErrors } : {}),
+			},
+		});
+		return host.open(
+			harness,
+			durable
+				? { threadId: durable.threadId, logId: durable.logId }
+				: { threadId: this.options.sessionId },
+		);
+	}
+
+	/** Inputs joined the running turn: their messages go out before its next model call. */
+	private joined(ctx: JoinContext) {
+		const run = this.run;
+		for (const input of ctx.inputs) {
+			const message =
+				this.joining.get(input.inputId) ??
+				fromModelMessage({ role: 'user', content: input.message });
+			this.joining.delete(input.inputId);
+			run?.pending.push(message);
+		}
+		return this.options.onJoin?.(ctx);
 	}
 
 	private middleware(): ChatMiddleware {
 		return {
 			name: 'flue/agent-loop',
-			onConfig: async (ctx) => {
+			onConfig: async (ctx, config) => {
 				const run = this.run;
 				if (!run || ctx.phase !== 'beforeModel') return;
-				return this.guard(run, () => this.beforeModelCall(run));
+				return this.guard(run, () =>
+					this.beforeModelCall(run, config.providerMessages ?? config.messages),
+				);
 			},
 			onChunk: async (_ctx, chunk) => {
 				const run = this.run;
-				if (!run?.assembler) return;
-				await this.guard(run, () => this.modelChunk(run, chunk));
+				if (!run) return;
+				if (run.assembler) await this.guard(run, () => this.modelChunk(run, chunk));
+				else if (chunk.type === EventType.TOOL_CALL_RESULT)
+					await this.guard(run, () => this.closeCutCall(run, chunk.toolCallId));
 			},
 			onToolPhaseComplete: async (_ctx, info) => {
 				const run = this.run;
@@ -423,19 +684,31 @@ export class AgentLoop {
 	private async guard<T>(run: LoopRun, work: () => Promise<T>) {
 		if (run.failure) throw run.failure.error;
 		try {
-			return await work();
+			const result = await work();
+			await this.flushAdmissions(run);
+			return result;
 		} catch (error) {
 			run.failure ??= { error };
 			throw error;
 		}
 	}
 
-	private async beforeModelCall(run: LoopRun) {
+	/**
+	 * Before each model call: the loop's events, and Flue's request. On a
+	 * binding, the call's messages (the harness transcript, with the joined
+	 * steers) are the context. Without one, Flue's transcript is.
+	 */
+	private async beforeModelCall(run: LoopRun, callMessages: ModelMessage[]) {
+		// A cut batch closes before the next model call, if no result chunk closed it.
+		if (run.batch) await this.finishBatch(run, new Map());
 		if (!run.firstCall) {
 			if (run.lastTurn) await this.options.prepareNextTurn?.(run.lastTurn);
 			if (run.pending.length === 0) run.pending = this.drainSteering();
 			await this.emit({ type: 'turn_start' });
 		}
+		// A model call after a failed one is a retry: the run goes on.
+		if (run.stopped) this.state.errorMessage = undefined;
+		run.stopped = false;
 		run.firstCall = false;
 		run.terminated = false;
 		const pending = run.pending;
@@ -455,11 +728,22 @@ export class AgentLoop {
 		const request = toModelRequest(
 			{
 				systemPrompt: this.state.systemPrompt,
-				messages: this.state.messages,
+				messages: this.options.durable ? [] : this.state.messages,
 				tools: tools.map(toToolDeclaration),
 			},
 			info,
 		);
+		run.assembler = new AssistantStreamAssembler(info);
+		run.assistantStarted = false;
+		const perCall = {
+			systemPrompts: request.systemPrompts,
+			tools: tools.map((tool) => this.harnessTool(tool)),
+			// pi sent the off value for `off` too (for example Anthropic `thinking.type: 'disabled'`).
+			reasoning: { level: thinkingLevel, summary: true },
+		};
+		// TanStack keeps the mid-conversation record of each stored assistant message itself.
+		if (this.options.durable)
+			return { ...perCall, providerMessages: toModelContext(callMessages, info) };
 		const providerMessages = this.withMidConversationChanges(request.messages);
 		const channels = run.adapter?.midConversationChannels;
 		run.midConversationChange =
@@ -470,15 +754,7 @@ export class AgentLoop {
 						systemPrompts: request.systemPrompts,
 					}).record
 				: undefined;
-		run.assembler = new AssistantStreamAssembler(info);
-		run.assistantStarted = false;
-		return {
-			providerMessages,
-			systemPrompts: request.systemPrompts,
-			tools: tools.map((tool) => this.harnessTool(tool)),
-			// pi sent the off value for `off` too (for example Anthropic `thinking.type: 'disabled'`).
-			reasoning: { level: thinkingLevel, summary: true },
-		};
+		return { ...perCall, providerMessages };
 	}
 
 	private async modelChunk(run: LoopRun, chunk: StreamChunk) {
@@ -544,6 +820,7 @@ export class AgentLoop {
 				(call) => tools.find((tool) => tool.name === call.name)?.executionMode === 'sequential',
 			),
 			truncated: message.stopReason === 'length',
+			closed: new Set(),
 			finished: new Map(),
 			emitted: new Set(),
 			turns: calls.map(() => Promise.withResolvers<void>()),
@@ -555,16 +832,27 @@ export class AgentLoop {
 		let harnessTool = this.harnessTools.get(tool);
 		if (harnessTool) return harnessTool;
 		const loop = this;
-		harnessTool = toHarnessTool({
-			...tool,
-			async execute(toolCallId, args, signal) {
-				const run = loop.run;
-				if (!run?.batch) return tool.execute(toolCallId, args, signal);
-				return loop.executeCall(run, run.batch, tool, toolCallId, args, signal);
+		harnessTool = toHarnessTool(
+			{
+				...tool,
+				async execute(toolCallId, args, signal) {
+					const run = loop.run;
+					if (!run?.batch) return tool.execute(toolCallId, args, signal);
+					return loop.executeCall(run, run.batch, tool, toolCallId, args, signal);
+				},
 			},
-		});
+			this.toolOptions(),
+		);
 		this.harnessTools.set(tool, harnessTool);
 		return harnessTool;
+	}
+
+	private toolOptions(): HarnessToolOptions {
+		const { onToolCall, onToolResult } = this.options;
+		return {
+			...(onToolCall ? { onCall: onToolCall } : {}),
+			...(onToolResult ? { onResult: onToolResult } : {}),
+		};
 	}
 
 	private async executeCall(
@@ -585,9 +873,7 @@ export class AgentLoop {
 			);
 			const outcome = batch.truncated
 				? {
-						result: errorToolResult(
-							`Tool call "${tool.name}" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`,
-						),
+						result: errorToolResult(truncatedCallText(tool.name)),
 						isError: true,
 					}
 				: await runTool(tool, toolCallId, args, signal);
@@ -659,10 +945,10 @@ export class AgentLoop {
 					toolName: call.name,
 					args: call.arguments,
 				});
-				outcome = {
-					result: errorToolResult(skippedCallText(call, chatResults.get(call.id))),
-					isError: true,
-				};
+				const text = batch.truncated
+					? truncatedCallText(call.name)
+					: skippedCallText(call, chatResults.get(call.id));
+				outcome = { result: errorToolResult(text), isError: true };
 				await this.finishCall(batch, call.id, call.name, outcome);
 			}
 			if (!batch.emitted.has(call.id))
@@ -675,6 +961,19 @@ export class AgentLoop {
 		run.lastTurn = { message: batch.assistant, toolResults };
 		await this.emit({ type: 'turn_end', message: batch.assistant, toolResults });
 		run.pending = this.drainSteering();
+	}
+
+	/**
+	 * The harness closed a call of a cut batch with an error result. The calls
+	 * never run, so the batch ends when the last one is closed, with Flue's
+	 * results and events.
+	 */
+	private async closeCutCall(run: LoopRun, toolCallId: string) {
+		const batch = run.batch;
+		if (!batch?.truncated) return;
+		batch.closed.add(toolCallId);
+		if (batch.calls.every((call) => batch.closed.has(call.id)))
+			await this.finishBatch(run, new Map());
 	}
 
 	/** The result message a sequential batch already emitted for `call`. */
@@ -699,7 +998,9 @@ export class AgentLoop {
 	/** The model stopped calling tools: continue the same run while steered messages wait. */
 	private beforeFinish() {
 		const run = this.run;
-		if (!run || run.stopped || run.failure || run.signal.aborted) return undefined;
+		// On a binding, the harness itself joins a steer that waits after the answer.
+		if (!run || this.options.durable || run.stopped || run.failure || run.signal.aborted)
+			return undefined;
 		// pi polled the steering queue once, after `turn_end`.
 		if (run.pending.length === 0) return undefined;
 		return { messages: [{ role: 'user' as const, content: 'Continue.' }] };

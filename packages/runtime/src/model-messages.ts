@@ -149,48 +149,100 @@ function toContentParts(
 	target: FlueModelInfo,
 	imagePlaceholder: string,
 ) {
-	const parts: ContentPart[] = [];
-	for (const block of blocks) {
-		const part = toContentPart(block, target, imagePlaceholder);
-		const last = parts.at(-1);
+	return readableParts(blocks.map(toContentPart), target, imagePlaceholder);
+}
+
+/** The parts that `target` can read: other media becomes a text placeholder. */
+function readableParts(
+	parts: readonly ContentPart[],
+	target: FlueModelInfo,
+	imagePlaceholder: string,
+) {
+	const readable: ContentPart[] = [];
+	for (const source of parts) {
+		const part = readablePart(source, target, imagePlaceholder);
+		const last = readable.at(-1);
 		// pi folds a run of omitted images into one placeholder.
 		const isRepeatedPlaceholder =
 			part.type === 'text' &&
 			part.content === imagePlaceholder &&
 			last?.type === 'text' &&
 			last.content === imagePlaceholder;
-		if (!isRepeatedPlaceholder) parts.push(part);
+		if (!isRepeatedPlaceholder) readable.push(part);
 	}
-	return parts;
+	return readable;
 }
 
-function toContentPart(
-	block: TextContent | ImageContent,
+function readablePart(
+	part: ContentPart,
 	target: FlueModelInfo,
 	imagePlaceholder: string,
 ): ContentPart {
+	if (part.type === 'document' && !target.input.includes('document')) {
+		warnDocumentsOmitted(target.api);
+		const filename = isJsonObject(part.metadata) ? part.metadata.filename : undefined;
+		return {
+			type: 'text',
+			content: documentOmittedPlaceholder(
+				target.api,
+				typeof filename === 'string' ? filename : undefined,
+			),
+		};
+	}
+	if (part.type === 'image' && !target.input.includes('image'))
+		return { type: 'text', content: imagePlaceholder };
+	return part;
+}
+
+function toContentPart(block: TextContent | ImageContent): ContentPart {
 	if (block.type === 'text') return { type: 'text', content: block.text };
 	const source = {
 		type: 'data' as const,
 		value: block.data,
 		mimeType: block.mimeType,
 	};
-	if (isDocumentContextBlock(block)) {
-		if (!target.input.includes('document')) {
-			warnDocumentsOmitted(target.api);
-			return {
-				type: 'text',
-				content: documentOmittedPlaceholder(target.api, block.filename),
-			};
-		}
+	if (isDocumentContextBlock(block))
 		return {
 			type: 'document',
 			source,
 			...(block.filename ? { metadata: { filename: block.filename } } : {}),
 		};
-	}
-	if (!target.input.includes('image')) return { type: 'text', content: imagePlaceholder };
 	return { type: 'image', source };
+}
+
+/**
+ * A user or signal message as a TanStack harness input: the text, and the
+ * image and document parts as they are. Each model call converts the media
+ * that its model cannot read (see {@link toModelContext}).
+ */
+export function toUserInput(message: AgentMessage) {
+	switch (message.role) {
+		case 'signal':
+			return renderSignalMessage(message);
+		case 'user': {
+			if (typeof message.content === 'string') return message.content;
+			const [only] = message.content;
+			// One text block is plain text, as the transcript keeps a typed message.
+			if (message.content.length === 1 && only?.type === 'text') return only.text;
+			return message.content.map(toContentPart);
+		}
+		default:
+			throw new Error(`[flue] A ${message.role} message cannot be a harness input.`);
+	}
+}
+
+/**
+ * The messages of one model call for `target`, with the media rules of
+ * {@link toModelRequest}: image and document parts of user and tool messages
+ * that `target` cannot read become text placeholders. Other fields of each
+ * message stay, so the mid-conversation records of assistant messages stay.
+ */
+export function toModelContext(messages: readonly ModelMessage[], target: FlueModelInfo) {
+	return messages.map((message): ModelMessage => {
+		if (message.role === 'assistant' || !Array.isArray(message.content)) return message;
+		const placeholder = message.role === 'user' ? USER_IMAGE_PLACEHOLDER : TOOL_IMAGE_PLACEHOLDER;
+		return { ...message, content: readableParts(message.content, target, placeholder) };
+	});
 }
 
 function toAssistantModelMessage(message: AssistantMessage): ModelMessage {
