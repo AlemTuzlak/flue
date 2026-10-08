@@ -107,7 +107,8 @@ export class ConversationRecordWriter {
 	/**
 	 * A writer whose records go through the harness log of `path`. `append`
 	 * appends host records through any open session of that log. Each record
-	 * names its conversation's session with `thread` (the conversation id).
+	 * names its conversation's session with `thread` (the conversation id),
+	 * and carries the `submission` of its append as `authorization`.
 	 */
 	static async overHarness(options: {
 		store: ConversationStreamStore;
@@ -192,6 +193,11 @@ export class ConversationRecordWriter {
 
 	private initialOffset() {
 		return this.target.kind === 'store' ? this.target.claim.offset : '-1';
+	}
+
+	/** True for a writer from {@link ConversationRecordWriter.overHarness}. */
+	get throughHarness() {
+		return this.target.kind === 'harness';
 	}
 
 	get failed(): boolean {
@@ -359,9 +365,12 @@ export class ConversationRecordWriter {
 		records: readonly ConversationRecord[],
 		options: ConversationAppendOptions,
 	) {
+		// The attempt that may write the records goes with them, so the log
+		// store can pass it to the stream store.
 		const threaded = records.map((record) => ({
 			...record,
 			thread: record.conversationId,
+			...(options.submission ? { authorization: options.submission } : {}),
 		}));
 		if (options.stage) {
 			options.stage(threaded);

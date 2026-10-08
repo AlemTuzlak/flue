@@ -7,7 +7,6 @@ import {
 	type CompactionRecord,
 	type ConversationRecord,
 	encodeCanonicalId,
-	flueRecordsOf,
 } from './conversation-records.ts';
 import { isDocumentMimeType } from './document-attachments.ts';
 import { AttachmentNotAvailableError, ConversationRecordInvariantError } from './errors.ts';
@@ -453,12 +452,10 @@ export function applyConversationRecord(
 	state: ReducedInstanceState,
 	record: ConversationRecord,
 ): void {
-	if (record.type === 'harness_log_batch') {
-		// A harness batch is a log position, not a conversation record: its Flue
-		// records apply in order, and the batch leaves no index entry of its own.
-		for (const inner of flueRecordsOf([record])) applyConversationRecord(state, inner);
-		return;
-	}
+	// The harness part of a harness log append. The Flue records of the
+	// append are at the top level of the batch and apply on their own, and
+	// this record leaves no index entry.
+	if (record.type === 'harness_log_batch') return;
 	const accepted = state.recordsById.get(record.id);
 	if (accepted) {
 		// A stub compares by the digest of the record's canonical JSON — the

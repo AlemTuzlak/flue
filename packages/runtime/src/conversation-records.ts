@@ -445,10 +445,37 @@ export interface HarnessLogRecord {
 }
 
 /**
- * One append of the TanStack harness log, stored as one Flue batch. Its
- * records are at log positions `seq`, `seq + 1`, and so on. It is a record of
- * the whole log, not of one conversation: `conversationId`, `harness`, and
- * `session` are empty, and readers unwrap `records` instead.
+ * The attempt that may write a Flue host record. The conversation writer puts
+ * it on each record it sends through the harness, next to `thread`. The log
+ * store takes it off and gives it to the stream store, which checks it as it
+ * checks the `submission` of a direct append.
+ */
+export interface HarnessRecordAuthorization {
+	submissionId: string;
+	attemptId: string;
+}
+
+/**
+ * The place of a Flue record in a {@link HarnessLogBatchRecord}. The Flue
+ * record itself is at the top level of the same stream batch, at `index`.
+ * Read back, the log record is that record with `thread` added.
+ */
+export type HarnessFlueRecordSlot = {
+	type: 'harness.flue_record';
+	index: number;
+	thread: string;
+};
+
+/**
+ * The harness part of one append of the TanStack harness log. The append is
+ * one Flue batch: its Flue records come first, at the top level, as plain
+ * conversation records, and this record comes last. Its `records` are every
+ * log record of the append, in log order, at positions `seq`, `seq + 1`, and
+ * so on. Each Flue record is a {@link HarnessFlueRecordSlot} there. It is a
+ * record of the whole log, not of one conversation: `conversationId`,
+ * `harness`, and `session` are empty, and conversation readers skip it.
+ *
+ * An append with only Flue records has no such record.
  */
 export interface HarnessLogBatchRecord extends ConversationRecordEnvelope {
 	type: 'harness_log_batch';
@@ -511,8 +538,11 @@ const FLUE_RECORD_TYPES: Record<Exclude<ConversationRecord['type'], 'harness_log
 	resource_snapshot: true,
 };
 
-/** A Flue record read back from a harness batch. The log store already parsed it from JSON. */
-function isFlueRecord(record: object): record is ConversationRecord {
+/**
+ * True for a Flue conversation record among the records of a harness log
+ * append. Other records are harness records or other host records.
+ */
+export function isFlueRecord(record: object): record is ConversationRecord {
 	return (
 		'v' in record &&
 		record.v === 1 &&
@@ -525,23 +555,12 @@ function isFlueRecord(record: object): record is ConversationRecord {
 }
 
 /**
- * The Flue records of a batch, in order. A harness batch gives the Flue
- * records it carries, without the harness's `thread` field, and leaves out
- * its `harness.*` records and other host records. Any other batch is already
- * Flue records.
+ * The Flue records of a batch, in order. A harness log append keeps its Flue
+ * records at the top level, so this leaves out only its `harness_log_batch`
+ * record.
  */
 export function flueRecordsOf(records: readonly ConversationRecord[]) {
-	const flueRecords: ConversationRecord[] = [];
-	for (const record of records) {
-		if (record.type !== 'harness_log_batch') {
-			flueRecords.push(record);
-			continue;
-		}
-		for (const { thread: _thread, ...inner } of record.records) {
-			if (isFlueRecord(inner)) flueRecords.push(inner);
-		}
-	}
-	return flueRecords;
+	return records.filter((record) => record.type !== 'harness_log_batch');
 }
 
 export function generateConversationRecordId(): string {

@@ -27,6 +27,26 @@ import type { FlueModel } from './providers/provider.ts';
 import type { PromptUsage } from './types.ts';
 import { addUsage, fromProviderUsage } from './usage.ts';
 
+// ─── Harness transcript ─────────────────────────────────────────────────────
+
+/**
+ * A compacted context as a harness transcript: each message in TanStack's
+ * form, for any model (media stays, and each model call converts what its
+ * model cannot read). A message with an `id` keeps it on its first model
+ * message, so a reader can find the summary of a compaction in the transcript.
+ */
+export function toHarnessTranscript(
+	entries: readonly { message: AgentMessage; id?: string }[],
+	model: FlueModel,
+) {
+	const target = { ...modelInfo(model), input: ['text', 'image', 'document'] as const };
+	return entries.flatMap(({ message, id }) =>
+		toModelRequest({ systemPrompt: '', messages: [message], tools: [] }, target).messages.map(
+			(converted, index) => (index === 0 && id !== undefined ? { ...converted, id } : converted),
+		),
+	);
+}
+
 // ─── Settings ───────────────────────────────────────────────────────────────
 
 export interface CompactionSettings {

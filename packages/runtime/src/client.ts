@@ -17,6 +17,11 @@ import { ensureInstanceIdentity } from './runtime/agent-submissions.ts';
 import { type AttachmentStore, InMemoryAttachmentStore } from './runtime/attachment-store.ts';
 import { InMemoryConversationStreamStore } from './runtime/conversation-stream-store.ts';
 import { dispatchGlobalEvent } from './runtime/events.ts';
+import {
+	createHostRecordAppend,
+	createInstanceHarnessHost,
+	type InstanceHarnessBinding,
+} from './runtime/instance-harness-host.ts';
 import { resolveAgentDurability } from './runtime/registration.ts';
 import { agentStreamPath } from './runtime/stream-offsets.ts';
 import { createCwdSandbox } from './sandbox.ts';
@@ -75,6 +80,14 @@ export interface FlueContextConfig {
 	 * one connects fresh at every harness initialization.
 	 */
 	mcpConnections?: McpConnectionResolver;
+	/**
+	 * The durable harness host of the instance, and its log (the instance
+	 * stream path). Every Flue session runs as a thread of the host, and
+	 * `conversationWriter` must be a writer over the same log
+	 * (`ConversationRecordWriter.overHarness`). Set it with the writer. A
+	 * context with neither makes a local runtime with its own host.
+	 */
+	harnessHost?: InstanceHarnessBinding;
 }
 
 /** Extends FlueEventContext with server-only methods. */
@@ -101,6 +114,7 @@ export interface FlueContextInternal extends FlueEventContext {
 	setConversationWriter?(writer: ConversationRecordWriter | undefined): void;
 	setAttachmentStore?(store: AttachmentStore | undefined): void;
 	setMcpConnections?(resolver: McpConnectionResolver | undefined): void;
+	setHarnessHost?(binding: InstanceHarnessBinding | undefined): void;
 }
 
 export function createFlueContext(config: FlueContextConfig): FlueContextInternal {
@@ -112,12 +126,8 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 	let conversationWriter = config.conversationWriter;
 	let attachmentStore = config.attachmentStore;
 	let mcpConnections = config.mcpConnections;
-	let localConversationRuntime:
-		| Promise<{
-				writer: ConversationRecordWriter;
-				attachments: AttachmentStore;
-		  }>
-		| undefined;
+	let harnessHost = config.harnessHost;
+	let localConversationRuntime: ReturnType<typeof createLocalConversationRuntime> | undefined;
 
 	const createEvent = (event: FlueEventInput): FlueEvent => ({
 		...event,
@@ -191,7 +201,11 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 			if (!conversationWriter || !attachmentStore) {
 				localConversationRuntime ??= createLocalConversationRuntime(config);
 				const local = await localConversationRuntime;
-				conversationWriter ??= local.writer;
+				// The local writer appends through the local host, so the two go together.
+				if (!conversationWriter) {
+					conversationWriter = local.writer;
+					harnessHost = local.harnessHost;
+				}
 				attachmentStore ??= local.attachments;
 				// A context without a coordinator-provided conversation runtime has
 				// no admission layer to own instance identity, so it self-admits:
@@ -201,7 +215,7 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 			}
 			return initializeRootHarness(
 				agent,
-				{ ...config, conversationWriter, attachmentStore, mcpConnections },
+				{ ...config, conversationWriter, attachmentStore, mcpConnections, harnessHost },
 				emitEvent,
 				delivery,
 			);
@@ -270,25 +284,43 @@ export function createFlueContext(config: FlueContextConfig): FlueContextInterna
 		setMcpConnections(value: McpConnectionResolver | undefined): void {
 			mcpConnections = value;
 		},
+
+		setHarnessHost(value: InstanceHarnessBinding | undefined): void {
+			harnessHost = value;
+		},
 	};
 
 	return ctx;
 }
 
-async function createLocalConversationRuntime(config: FlueContextConfig): Promise<{
-	writer: ConversationRecordWriter;
-	attachments: AttachmentStore;
-}> {
-	const store = new InMemoryConversationStreamStore();
-	const path = agentStreamPath(config.agentName ?? 'agent', config.id);
-	return {
-		writer: await ConversationRecordWriter.create({
-			store,
+/**
+ * The conversation runtime of a context that no coordinator serves: memory
+ * stores, and a durable harness host on them whose leases live in this
+ * process. The writer appends through the host's log.
+ */
+async function createLocalConversationRuntime(config: FlueContextConfig) {
+	const streams = new InMemoryConversationStreamStore();
+	const agentName = config.agentName ?? 'agent';
+	const path = agentStreamPath(agentName, config.id);
+	const identity = { agentName, instanceId: config.id };
+	const harnessHost = {
+		host: createInstanceHarnessHost({
+			streams,
 			path,
-			identity: { agentName: config.agentName ?? 'agent', instanceId: config.id },
-			producerId: `execution:${config.id}`,
+			identity,
+			ownerId: `execution:${config.id}`,
+		}),
+		logId: path,
+	};
+	return {
+		writer: await ConversationRecordWriter.overHarness({
+			store: streams,
+			path,
+			identity,
+			append: createHostRecordAppend(harnessHost),
 		}),
 		attachments: new InMemoryAttachmentStore(),
+		harnessHost,
 	};
 }
 
@@ -300,6 +332,14 @@ async function initializeRootHarness(
 ): Promise<Harness> {
 	if (!config.conversationWriter || !config.attachmentStore) {
 		throw new Error('[flue] Canonical conversation runtime is not configured.');
+	}
+	if (!config.harnessHost) {
+		throw new Error('[flue] A context with a conversation writer needs its harness host.');
+	}
+	if (!config.conversationWriter.throughHarness) {
+		throw new Error(
+			'[flue] A context with a harness host needs a conversation writer over its log (ConversationRecordWriter.overHarness).',
+		);
 	}
 	// usePersistentState reads the instance's reduced state snapshot at render time and
 	// writes through this buffer, which the session drains into the tool
@@ -489,6 +529,7 @@ async function initializeRootHarness(
 		toolFactory,
 		conversationWriter: config.conversationWriter,
 		attachmentStore: config.attachmentStore,
+		harnessHost: config.harnessHost,
 		executionContext: { instanceId: config.id },
 		hookState,
 		rerender,

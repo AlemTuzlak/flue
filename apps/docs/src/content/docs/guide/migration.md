@@ -237,6 +237,15 @@ Hand-written channels build on the new `createChannelRouter(routes)` from `@flue
 - `db.ts` moved from `.flue/db.ts` to the source root (`src/db.ts`), matching the general source-root rule. Standalone `start()` scripts take `db:` directly and do not read `db.ts`.
 - Custom adapters: `RunStore` and `EventStreamStore` are deleted, `AgentSubmissionStore` grew settlement and lease methods, and `@flue/runtime/test-utils` now ships contract test suites to verify an adapter against the new obligations.
 
+### Conversations from an earlier Flue 2 release
+
+Conversations that an earlier Flue 2 release stored keep working after the upgrade. No migration step is necessary, and the database is not reset.
+
+- The history reads the same, and the next message sees the whole conversation.
+- A submission that the earlier release left unfinished continues after the upgrade. Recovery brings its last turn to rest, as [Recovery after an interruption](/docs/guide/durability/#recovery-after-an-interruption) describes, and the turn continues with no new message.
+
+The upgrade is one-way for each conversation. After the new release writes to a conversation, an earlier release cannot read that conversation. Before you return to an earlier release, restore the database from a backup that you made before the upgrade.
+
 ## Providers
 
 Flue's provider registration schema is gone. A provider is a `Provider` object: build it with `createProvider()` from `@flue/runtime`, and register it with `setProvider()`. `registerProvider()`, `registerApiProvider()`, `ProviderRegistrationError`, and the registration option bag are removed.
