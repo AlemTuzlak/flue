@@ -36,6 +36,9 @@
 		},
 		"packages/runtime": {
 			"ignoreDependencies": ["@hono/node-server"]
+		},
+		"packages/vite": {
+			"ignoreDependencies": ["@tanstack/ai"]
 		}
 	}
 }
