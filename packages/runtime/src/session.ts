@@ -8,7 +8,7 @@ import { modelContextCompactionFields } from './model-request-info.ts';
  */
 
 import type { ModelMessage } from '@tanstack/ai';
-import { defineHarness, type JoinContext } from '@tanstack/ai-harness';
+import { defineHarness, type JoinContext, type RecoverContext } from '@tanstack/ai-harness';
 import type * as v from 'valibot';
 import {
 	abandonToolOnAbort,
@@ -43,7 +43,10 @@ import {
 	AgentLoop,
 	type CompletedTurn,
 	createInitialSystemMessage,
+	INTERRUPTED_TOOL_RESULT,
 	type ModelCallRequest,
+	STREAM_RECOVERY_SIGNALS,
+	type ToolCallOutcome,
 	toToolDeclaration,
 } from './agent-loop.ts';
 import { decodeBase64, encodeBase64 } from './base64.ts';
@@ -805,6 +808,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		  }
 		| undefined;
 	private canonicalToolRequestMessageId: string | undefined;
+	/** The assistant entry of a tool batch that recovery resumed: its commit is the repair commit. */
+	private resumedToolBatchId: string | undefined;
 	/**
 	 * The just-committed tool batch, stashed by the `turn_end` handler for the
 	 * `prepareNextTurn` rerender that runs immediately after it — tool
@@ -2647,6 +2652,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 							threadId: this.conversationId,
 							logId: options.harnessHost.logId,
 						},
+						recover: (ctx: RecoverContext) => this.recoverHarnessInput(ctx),
 						onToolCall: (call: HarnessToolCall) => this.harnessToolCalls.set(call.toolCallId, call),
 						canJoin: () => this.activeJoinSignal?.aborted !== true,
 						onJoin: (ctx: JoinContext) => this.joinHarnessInputs(ctx),
@@ -3082,18 +3088,23 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						// (Signal appends never sit pending at turn boundaries:
 						// `ctx.append` exists only inside lifecycle callbacks, and each
 						// callback's own batch drains them before it returns.)
+						// A batch that recovery resumed ends with the repair commit.
+						const isResumedBatch = this.resumedToolBatchId === assistantMessageId;
+						this.resumedToolBatchId = undefined;
 						await this.appendCanonical([
 							...this.drainHookStateRecords(),
-							{
-								...this.canonicalEnvelope(
-									'tool_results_committed',
-									`record_tool_results_committed_${encodeCanonicalId(assistantMessageId)}`,
-								),
-								type: 'tool_results_committed',
-								assistantMessageId,
-								parentId,
-								outcomeIds,
-							},
+							isResumedBatch
+								? this.repairCommitRecord(assistantMessageId, outcomeIds)
+								: {
+										...this.canonicalEnvelope(
+											'tool_results_committed',
+											`record_tool_results_committed_${encodeCanonicalId(assistantMessageId)}`,
+										),
+										type: 'tool_results_committed',
+										assistantMessageId,
+										parentId,
+										outcomeIds,
+									},
 						]);
 						this.publishPendingToolResults(event.toolResults);
 						this.lastCommittedToolBatch = {
@@ -3447,19 +3458,31 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		ref: Extract<CanonicalChildSessionRef, { type: 'task' }>,
 		signal: AbortSignal,
 	): Promise<ConversationRecord> {
-		if (!this.createTaskSession) {
-			throw new Error('[flue] This session cannot resume task sessions.');
-		}
 		const toolCallBlock = assistant.content.find(
 			(block): block is Extract<typeof block, { type: 'toolCall' }> =>
 				block.type === 'toolCall' && block.id === toolCallId,
 		);
-		const args = (toolCallBlock?.arguments ?? {}) as {
-			agent?: string;
-			cwd?: string;
-			prompt?: string;
-			attachments?: Array<{ id: string }>;
-		};
+		const args = (toolCallBlock?.arguments ?? {}) as TaskResumeArgs;
+		const resumed = await this.resumeTaskChild(args, ref, signal);
+		if (resumed instanceof SubagentNotDeclaredError) {
+			return this.taskResumeFailureOutcomeRecord(assistantEntryId, toolCallId, resumed);
+		}
+		return this.taskResumeOutcomeRecord(assistantEntryId, toolCallId, resumed.text);
+	}
+
+	/**
+	 * Reattach to the retained child of a `task` call and resume it to
+	 * completion. Returns the child's final text, or the error when the
+	 * subagent is no longer declared.
+	 */
+	private async resumeTaskChild(
+		args: TaskResumeArgs,
+		ref: Extract<CanonicalChildSessionRef, { type: 'task' }>,
+		signal: AbortSignal | undefined,
+	): Promise<{ text: string; session: string } | SubagentNotDeclaredError> {
+		if (!this.createTaskSession) {
+			throw new Error('[flue] This session cannot resume task sessions.');
+		}
 		// D-B: a renamed/removed subagent across a deploy is deterministically
 		// unrecoverable — fall back to an error outcome for this one call only.
 		let taskAgent: ResolvedSubagent | undefined;
@@ -3477,9 +3500,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					: undefined;
 			taskAgent = args.agent ? this.resolveSubagent(args.agent, delivery) : undefined;
 		} catch (error) {
-			if (error instanceof SubagentNotDeclaredError) {
-				return this.taskResumeFailureOutcomeRecord(assistantEntryId, toolCallId, error);
-			}
+			if (error instanceof SubagentNotDeclaredError) return error;
 			throw error;
 		}
 
@@ -3520,7 +3541,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				session: child.name,
 				conversationId: child.conversationId,
 			});
-			return this.taskResumeOutcomeRecord(assistantEntryId, toolCallId, text);
+			return { text, session: child.name };
 		} finally {
 			if (child) {
 				await child.close();
@@ -3616,41 +3637,47 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				outcomeIds.push(resolvedRecord.id);
 				continue;
 			}
-			const repairKey = `${encodeCanonicalId(assistantEntryId)}_${encodeCanonicalId(toolCall.id)}`;
-			const recordId = `record_tool_repair_outcome_${repairKey}`;
-			outcomeRecords.push({
-				...this.canonicalEnvelope('tool_outcome', recordId),
-				type: 'tool_outcome',
-				assistantMessageId: assistantEntryId,
-				toolCallId: toolCall.id,
-				toolName: toolCall.name,
-				isError: true,
-				content: [
-					{
-						type: 'text',
-						text: JSON.stringify({
-							type: 'interrupted',
-							message: 'Tool execution was interrupted before completion. The outcome is unknown.',
-						}),
-					},
-				],
-			});
-			outcomeIds.push(recordId);
+			const record = this.interruptedToolOutcomeRecord(assistantEntryId, toolCall);
+			outcomeRecords.push(record);
+			outcomeIds.push(record.id);
 		}
 		if (outcomeRecords.length > 0) await this.appendCanonical(outcomeRecords);
-		await this.appendCanonical([
-			{
-				...this.canonicalEnvelope(
-					'tool_results_committed',
-					`record_tool_repair_commit_${encodeCanonicalId(assistantEntryId)}`,
-				),
-				type: 'tool_results_committed',
-				assistantMessageId: assistantEntryId,
-				parentId: assistantEntryId,
-				outcomeIds,
-			},
-		]);
+		await this.appendCanonical([this.repairCommitRecord(assistantEntryId, outcomeIds)]);
 		await this.rebuildCanonicalContext();
+	}
+
+	/** The interrupted marker outcome of a tool call that a stop cut. */
+	private interruptedToolOutcomeRecord(
+		assistantEntryId: string,
+		toolCall: { id: string; name: string },
+	): ConversationRecord {
+		const repairKey = `${encodeCanonicalId(assistantEntryId)}_${encodeCanonicalId(toolCall.id)}`;
+		return {
+			...this.canonicalEnvelope('tool_outcome', `record_tool_repair_outcome_${repairKey}`),
+			type: 'tool_outcome',
+			assistantMessageId: assistantEntryId,
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			isError: true,
+			content: [{ type: 'text', text: INTERRUPTED_TOOL_RESULT }],
+		};
+	}
+
+	/** The commit of a repaired tool batch, with its outcomes in call order. */
+	private repairCommitRecord(
+		assistantEntryId: string,
+		outcomeIds: readonly string[],
+	): ConversationRecord {
+		return {
+			...this.canonicalEnvelope(
+				'tool_results_committed',
+				`record_tool_repair_commit_${encodeCanonicalId(assistantEntryId)}`,
+			),
+			type: 'tool_results_committed',
+			assistantMessageId: assistantEntryId,
+			parentId: assistantEntryId,
+			outcomeIds: [...outcomeIds],
+		};
 	}
 
 	/**
@@ -3694,26 +3721,28 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			return true;
 		}
 		if (conversation.activeLeafId !== partial.id) return false;
-		let parentId = partial.id;
+		await this.appendCanonical(this.streamRecoverySignalRecords(partial.id));
+		await this.rebuildCanonicalContext();
+		return true;
+	}
+
+	/** The `stream_interrupted` and `stream_continued` signals after the aborted partial `partialId`. */
+	private streamRecoverySignalRecords(partialId: string) {
+		let parentId = partialId;
 		const records: ConversationRecord[] = [];
-		for (const signalType of ['stream_interrupted', 'stream_continued'] as const) {
-			const messageId = `entry_recovery_${partial.id}_${signalType}`;
+		for (const { type: signalType, content } of STREAM_RECOVERY_SIGNALS) {
+			const messageId = `entry_recovery_${partialId}_${signalType}`;
 			records.push({
-				...this.canonicalEnvelope('signal', `record_recovery_${partial.id}_${signalType}`),
+				...this.canonicalEnvelope('signal', `record_recovery_${partialId}_${signalType}`),
 				type: 'signal',
 				messageId,
 				parentId,
 				signalType,
-				content:
-					signalType === 'stream_interrupted'
-						? 'The previous assistant stream was interrupted.'
-						: 'Continue from the durable partial assistant response.',
+				content,
 			});
 			parentId = messageId;
 		}
-		await this.appendCanonical(records);
-		await this.rebuildCanonicalContext();
-		return true;
+		return records;
 	}
 
 	/**
@@ -3815,6 +3844,108 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		await this.appendCanonical(this.materializeInProgressStreamRecords(inProgress));
 		await this.rebuildCanonicalContext();
 		return true;
+	}
+
+	/**
+	 * The harness `recover` on the durable path. Before a recovered turn runs,
+	 * Flue's records get the history of the cut (see
+	 * {@link recordRecoveredTurn}). The harness decision stays as it is.
+	 */
+	private async recoverHarnessInput(ctx: RecoverContext) {
+		if (ctx.decision.action === 'run') await this.recordRecoveredTurn(ctx);
+		return undefined;
+	}
+
+	/**
+	 * Write Flue's records of a turn that a stopped host cut, before the
+	 * harness runs it again. They match the records of Flue's own resume:
+	 *
+	 * - A cut answer ends as an aborted assistant with the streamed text (the
+	 *   ghost records). When it has text, the `stream_interrupted` and
+	 *   `stream_continued` signals follow. The model gets their text from
+	 *   the harness (`continueCutOff`), so they are records for the history
+	 *   only.
+	 * - A cut tool batch: each call that the harness closes gets the
+	 *   interrupted marker (or the truncated outcome for an answer that hit
+	 *   the output limit). When no call runs again, the repair commit ends
+	 *   the batch. Else the agent loop resumes the batch: the calls with
+	 *   `replay: 'safe'` run again, and the batch ends with the repair commit.
+	 *
+	 * The records land through `ctx.session.append`, in one append.
+	 */
+	private async recordRecoveredTurn(ctx: RecoverContext): Promise<void> {
+		const conversation = await this.requireConversation();
+		const records: ConversationRecord[] = [];
+		const ghost = [...conversation.inProgressMessages.values()].find(
+			(message) => message.parentId === conversation.activeLeafId,
+		);
+		if (ghost) {
+			records.push(...this.materializeInProgressStreamRecords(ghost));
+			if (hasContinuableContent(ghost))
+				records.push(...this.streamRecoverySignalRecords(ghost.messageId));
+		} else {
+			records.push(...(await this.recordRecoveredToolBatch(conversation, ctx.interruptedTools)));
+		}
+		if (records.length === 0) return;
+		const staged: HarnessLogRecord[] = [];
+		await this.conversationWriter.append(records, {
+			...this.canonicalAppendOptions(),
+			stage: (batch) => staged.push(...batch),
+		});
+		await ctx.session.append(staged);
+	}
+
+	/** The records of a cut tool batch at the leaf. See {@link recordRecoveredTurn}. */
+	private async recordRecoveredToolBatch(
+		conversation: ReducedConversationState,
+		closed: RecoverContext['interruptedTools'],
+	): Promise<ConversationRecord[]> {
+		const messages = getActiveConversationPath(conversation).flatMap((entry) =>
+			entry.type === 'message' ? [entry] : [],
+		);
+		const partial = findTrailingPartialToolBatch(messages);
+		if (!partial || conversation.activeLeafId !== partial.entryId) return [];
+		const reasons = new Map(closed.map((call) => [call.toolCallId, call.reason]));
+		const records: ConversationRecord[] = [];
+		const outcomeIds: string[] = [];
+		const outcomes = new Map<string, ToolCallOutcome>();
+		let rerun = false;
+		for (const toolCall of partial.toolCalls) {
+			const recordedId = conversation.toolOutcomes.get(
+				toolOutcomeKey(partial.entryId, toolCall.id),
+			);
+			if (recordedId !== undefined) {
+				outcomeIds.push(recordedId);
+				outcomes.set(
+					toolCall.id,
+					recordedToolOutcome(await this.conversationWriter.getRecord(recordedId)),
+				);
+				continue;
+			}
+			const reason = reasons.get(toolCall.id);
+			if (reason === undefined) {
+				// The harness runs this call again.
+				rerun = true;
+				continue;
+			}
+			const record =
+				reason === 'truncated'
+					? this.truncatedToolCallOutcomeRecord(partial.entryId, toolCall)
+					: this.interruptedToolOutcomeRecord(partial.entryId, toolCall);
+			records.push(record);
+			outcomeIds.push(record.id);
+			const text =
+				reason === 'truncated' ? truncatedToolCallError(toolCall.name) : INTERRUPTED_TOOL_RESULT;
+			outcomes.set(toolCall.id, {
+				result: { content: [{ type: 'text', text }], details: {} },
+				isError: true,
+			});
+		}
+		if (!rerun) return [...records, this.repairCommitRecord(partial.entryId, outcomeIds)];
+		this.agentLoop.resumeToolBatch(partial.assistant, outcomes);
+		this.canonicalToolRequestMessageId = partial.entryId;
+		this.resumedToolBatchId = partial.entryId;
+		return records;
 	}
 
 	/**
@@ -4691,7 +4822,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		// inert (every name fails resolution) and `GeneralSubagent` is the
 		// opt-in for agents that only want a blank fresh-context delegate.
 		const frameworkTools = () => [
-			createTaskTool(runTask),
+			// A cut `task` call runs again and goes on with its retained child.
+			{ ...createTaskTool(runTask), replay: 'safe' as const },
 			...(activateSkillTool ? [activateSkillTool] : []),
 			...(packagedRead ? [packagedRead] : []),
 		];
@@ -4802,6 +4934,24 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		signal?: AbortSignal,
 		toolCallId?: string,
 	): Promise<AgentToolResult<TaskToolResultDetails | TaskToolUndeclaredAgentDetails>> {
+		// On the durable path, the harness runs a cut `task` call again: it
+		// goes on with the child that the cut call started.
+		const retained = toolCallId ? await this.retainedTaskChild(toolCallId) : undefined;
+		if (retained) {
+			const resumed = await this.resumeTaskChild(params, retained, signal);
+			if (resumed instanceof SubagentNotDeclaredError) {
+				throw new Error(JSON.stringify({ type: 'subagent_unavailable', message: resumed.message }));
+			}
+			return {
+				content: [{ type: 'text', text: resumed.text || '(task completed with no text)' }],
+				details: {
+					taskId: retained.taskId,
+					session: resumed.session,
+					...(params.agent ? { agent: params.agent } : {}),
+					...(params.cwd ? { cwd: params.cwd } : {}),
+				},
+			};
+		}
 		// Resolve against the LIVE roster — the task schema's `agent` is a
 		// plain string (never a name union, which would rewrite the tool spec
 		// on every roster flip), so unknown names are a real model-facing
@@ -4851,6 +5001,16 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				cwd: result.cwd,
 			},
 		};
+	}
+
+	/** On the durable path: the retained child of the `task` call `toolCallId`, if one exists. */
+	private async retainedTaskChild(toolCallId: string) {
+		if (!this.harnessHost) return undefined;
+		const conversation = await this.requireConversation();
+		return [...conversation.childConversations.values()].find(
+			(child): child is Extract<CanonicalChildSessionRef, { type: 'task' }> =>
+				child.type === 'task' && child.parentToolCallId === toolCallId,
+		);
 	}
 
 	private async executeTask<S extends v.GenericSchema | undefined>(
@@ -6054,13 +6214,26 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		inputEntryId: string;
 		errorLabel: string;
 		signal: AbortSignal;
+		/**
+		 * True on the durable path for an input that ran before: the harness
+		 * recovers it, and the agent loop follows the recovered turns.
+		 */
+		harnessRecovers: boolean;
 	}): Promise<void> {
 		// The subagent-reattach caller reaches repair through this call; on the
 		// main seam (`runPersistedContextInput`) the repair phase already ran
 		// pre-append and this re-run is an idempotent no-op — a repaired batch
 		// reclassifies `tool_results`, an upgraded partial reclassifies
 		// `stream_continuation`.
-		await this.repairResumableTail(options.inputEntryId, options.signal);
+		if (options.harnessRecovers) {
+			await this.runModelTurnWithRecovery({
+				start: () => this.agentLoop.recoverTurns(),
+				signal: options.signal,
+			});
+			this.throwIfError(options.errorLabel);
+		} else {
+			await this.repairResumableTail(options.inputEntryId, options.signal);
+		}
 		const state = classifyConversationSubmission(
 			await this.requireConversation(),
 			options.inputEntryId,
@@ -6175,7 +6348,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 							// converges its own ghost (scoped to unowned state) before
 							// the shared resume path classifies and, when the partial
 							// has content, upgrades it to a stream continuation.
-							await this.materializeGhostStream({ submissionId: undefined });
+							const harnessRecovers = this.harnessHost !== undefined;
+							if (!harnessRecovers) await this.materializeGhostStream({ submissionId: undefined });
 							const conversation = await this.requireConversation();
 							// A task conversation's first user message is its single durable
 							// input (the original task prompt); resume continues from there.
@@ -6189,6 +6363,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 								inputEntryId: inputEntry.id,
 								errorLabel: 'task',
 								signal,
+								harnessRecovers,
 							});
 							return this.getAssistantText();
 						},
@@ -6249,11 +6424,14 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// Running this at the ownership seam, not behind classification,
 					// is what makes a crash shape a non-event instead of an
 					// enumerated recovery case (#477).
-					await this.materializeGhostStream('any');
 					const inputAlreadyPersisted = await this.conversationWriter.hasConversationEntry(
 						this.conversationId,
 						options.inputEntryId,
 					);
+					// On the durable path, the harness recovers a resumed input: its
+					// `recover` hook writes these repairs (see `recordRecoveredTurn`).
+					const harnessRecovers = this.harnessHost !== undefined && inputAlreadyPersisted;
+					if (!harnessRecovers) await this.materializeGhostStream('any');
 					if (!inputAlreadyPersisted) {
 						// A genuinely new input: this submission is about to drive the
 						// conversation, so a trailing uncommitted tool batch was
@@ -6285,7 +6463,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// leaf — a signal or joined entry appended first buries the
 					// batch mid-history, where recorded tool outcomes are dropped
 					// from model context and the replayed turn re-executes them.
-					await this.repairResumableTail(options.inputEntryId, options.signal);
+					if (!harnessRecovers)
+						await this.repairResumableTail(options.inputEntryId, options.signal);
 					// Wake diff: resource flips from a previous response's final
 					// batch (no turn boundary followed them) narrate before turn 1
 					// against the init render — the model's actual turn-1 view.
@@ -6303,6 +6482,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						inputEntryId: options.inputEntryId,
 						errorLabel: options.errorLabel,
 						signal: options.signal,
+						harnessRecovers,
 					});
 					await this.runWouldStopPhase({
 						errorLabel: options.errorLabel,
@@ -6628,6 +6808,46 @@ function taskDeliveryMessage(text: string, images?: PromptImage[]): DeliveredMes
 		kind: 'user',
 		body: text,
 		...(images?.length ? { attachments: images.map(toPublicAttachment) } : {}),
+	};
+}
+
+/** The arguments of a `task` call that a resume reads. */
+interface TaskResumeArgs {
+	agent?: string;
+	cwd?: string;
+	prompt?: string;
+	attachments?: ReadonlyArray<{ id: string }>;
+}
+
+/**
+ * True when the harness continues a cut answer from its partial: the answer
+ * streamed text, or a signed thinking block.
+ */
+function hasContinuableContent(message: InProgressAssistantMessage) {
+	return [...message.blocks.values()].some(
+		(block) =>
+			(block.type === 'text' && block.deltas.join('').length > 0) ||
+			(block.type === 'reasoning' && block.encrypted !== undefined),
+	);
+}
+
+/**
+ * The outcome of a recorded tool call, for a resumed batch. The fold keeps
+ * only a stub of an older outcome: its content is in the log only.
+ */
+function recordedToolOutcome(record: IndexedConversationRecord | undefined): ToolCallOutcome {
+	if (record?.type !== 'tool_outcome') throw new Error('[flue] A tool outcome record is missing.');
+	const text =
+		'content' in record
+			? record.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n')
+			: '';
+	return {
+		result: {
+			content: [{ type: 'text', text }],
+			details: {},
+			...('terminate' in record && record.terminate ? { terminate: true } : {}),
+		},
+		isError: record.isError,
 	};
 }
 

@@ -28,6 +28,7 @@ import {
 	type HarnessTurnOptions,
 	type JoinContext,
 	type ModelErrorContext,
+	type RecoverContext,
 	type RecoverHook,
 	type TurnAdditions,
 	type UserInput,
@@ -44,6 +45,7 @@ import type {
 	ToolDeclaration,
 	ToolResultMessage,
 } from './llm-types.ts';
+import { renderSignalMessage } from './message-rendering.ts';
 import {
 	type AssistantBlockEvent,
 	AssistantStreamAssembler,
@@ -142,7 +144,11 @@ export interface AgentLoopOptions {
 	 * in-memory host, and the model context comes from `state.messages`.
 	 */
 	durable?: AgentLoopDurableBinding;
-	/** How an input that a crashed host left recovers. See `durability.recover`. */
+	/**
+	 * How an input that a crashed host left recovers. See `durability.recover`.
+	 * On a durable binding, a turn that runs gets the loop's adapter and
+	 * tools, and {@link AgentLoop.recoverTurns} follows it.
+	 */
 	recover?: RecoverHook;
 	/** Whether a waiting input joins the running turn now. */
 	canJoin?: HarnessTurnOptions['canJoin'];
@@ -215,6 +221,26 @@ function truncatedCallText(toolName: string) {
 	return `Tool call "${toolName}" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`;
 }
 
+/** The result of a cut tool call that must not run twice: Flue's interrupted marker. */
+export const INTERRUPTED_TOOL_RESULT = JSON.stringify({
+	type: 'interrupted',
+	message: 'Tool execution was interrupted before completion. The outcome is unknown.',
+});
+
+/**
+ * Flue's two signals after a cut answer: the history records of a continued
+ * answer, and the notes the model gets after the cut text.
+ */
+export const STREAM_RECOVERY_SIGNALS = [
+	{ type: 'stream_interrupted', content: 'The previous assistant stream was interrupted.' },
+	{ type: 'stream_continued', content: 'Continue from the durable partial assistant response.' },
+] as const;
+
+/** The signals of {@link STREAM_RECOVERY_SIGNALS} as the model reads them. */
+const STREAM_RECOVERY_NOTES = STREAM_RECOVERY_SIGNALS.map(({ type, content }) =>
+	renderSignalMessage({ role: 'signal', type, content, timestamp: 0 }),
+);
+
 function createInputId() {
 	return `flue:${crypto.randomUUID()}`;
 }
@@ -282,10 +308,17 @@ interface ToolBatch {
 	turns: PromiseWithResolvers<void>[];
 }
 
-/** The harness input that starts a run. */
+/** The harness input that starts a run. `recover` follows the turns that recovery runs. */
 type RunInput =
 	| { kind: 'prompt'; message: UserInput; inputId: string; ephemeral?: readonly ModelMessage[] }
-	| { kind: 'continue'; inputId: string; ephemeral?: readonly ModelMessage[] };
+	| { kind: 'continue'; inputId: string; ephemeral?: readonly ModelMessage[] }
+	| { kind: 'recover' };
+
+/** The outcome of one tool call. */
+export interface ToolCallOutcome {
+	result: AgentToolResult;
+	isError: boolean;
+}
 
 /** An ephemeral message of a `beforeFinish` hook, and where it went out. */
 interface Reminder {
@@ -361,6 +394,8 @@ export class AgentLoop {
 	private readonly harnessTools = new WeakMap<AgentTool, ReturnType<typeof toHarnessTool>>();
 	/** Steered messages sent to the harness, by input id, until they join a model call. */
 	private readonly joining = new Map<string, AgentMessage>();
+	/** The ids of the inputs that recovery runs, until a run follows them. */
+	private recovered: string[] = [];
 
 	constructor(private readonly options: AgentLoopOptions) {
 		let tools = options.initialState.tools.slice();
@@ -512,6 +547,36 @@ export class AgentLoop {
 		});
 	}
 
+	/**
+	 * On a durable binding: open the thread, and follow the turns that
+	 * recovery runs there (the inputs a stopped host left), with the loop's
+	 * events. Resolves when they ended. With no such turn, the run ends with
+	 * no model call.
+	 */
+	async recoverTurns() {
+		this.assertIdle('Agent is already processing. Wait for completion before recovering.');
+		await this.runLoop([], false, { kind: 'recover' });
+	}
+
+	/**
+	 * In the `recover` hook of a durable binding: the recovered turn runs the
+	 * calls of `assistant` again that have no outcome in `outcomes`. The batch
+	 * then ends with the loop's events, as a live batch does. Each call in
+	 * `outcomes` keeps its outcome and does not run.
+	 */
+	resumeToolBatch(assistant: AssistantMessage, outcomes: ReadonlyMap<string, ToolCallOutcome>) {
+		const run = this.run;
+		if (!run) throw new Error('[flue] A tool batch can resume only in a running recovery.');
+		const batch = this.createBatch(assistant);
+		for (const [toolCallId, outcome] of outcomes) {
+			batch.finished.set(toolCallId, outcome);
+			batch.emitted.add(toolCallId);
+		}
+		run.batch = batch;
+		// The model call after the batch starts a new turn.
+		run.firstCall = false;
+	}
+
 	private assertIdle(message: string) {
 		if (this.active) throw new Error(message);
 	}
@@ -606,6 +671,7 @@ export class AgentLoop {
 	/** One harness turn. The middleware below turns its hooks into the loop's events. */
 	private async runTurn(run: LoopRun, input: RunInput) {
 		const session = await this.session();
+		if (input.kind === 'recover') return this.followRecoveredTurns(run, session);
 		const adapter = await this.options.createAdapter(this.state.model, run.signal);
 		run.adapter = adapter;
 		const overrides = {
@@ -644,6 +710,59 @@ export class AgentLoop {
 		if (failure && run.firstCall) run.failure ??= failure;
 	}
 
+	/** Wait for the turns that recovery runs. Their events reach `run` through the middleware. */
+	private async followRecoveredTurns(run: LoopRun, session: HarnessSession) {
+		run.started.resolve();
+		const inputIds = this.recovered;
+		this.recovered = [];
+		const cancel = () => void session.cancel();
+		run.signal.addEventListener('abort', cancel, { once: true });
+		let failure: { error: unknown } | undefined;
+		try {
+			for (const inputId of inputIds) {
+				const settlement = await session.settled(inputId);
+				if (settlement.outcome === 'failed')
+					failure ??= {
+						error: new Error(settlement.error?.message ?? 'The recovered turn failed.'),
+					};
+			}
+		} catch (error) {
+			failure ??= { error };
+		} finally {
+			run.signal.removeEventListener('abort', cancel);
+		}
+		if (run.signal.aborted) {
+			await this.finishAfterCancel(run);
+			return;
+		}
+		if (run.batch && !run.failure) await this.guard(run, () => this.finishBatch(run, new Map()));
+		// A failure that no model call of this run reported.
+		if (failure && run.firstCall) run.failure ??= failure;
+	}
+
+	/**
+	 * The harness `recover` on a durable binding. The `recover` option
+	 * decides first. A turn that runs gets the loop's adapter, and the loop
+	 * follows it (see {@link recoverTurns}).
+	 */
+	private async recoverInput(ctx: RecoverContext) {
+		const decision = (await this.options.recover?.(ctx)) ?? ctx.decision;
+		if (decision.action !== 'run') return decision;
+		this.recovered.push(ctx.input.inputId);
+		const signal = this.run?.signal ?? new AbortController().signal;
+		const adapter = await this.options.createAdapter(this.state.model, signal);
+		return {
+			action: 'run' as const,
+			overrides: {
+				adapter,
+				promptCache: { key: this.options.sessionId },
+				// A cut call runs again before the first model call sets the tools.
+				tools: this.state.tools.map((tool) => this.harnessTool(tool)),
+				...decision.overrides,
+			},
+		};
+	}
+
 	private session() {
 		this.harnessSession ??= this.openSession();
 		return this.harnessSession;
@@ -653,7 +772,7 @@ export class AgentLoop {
 	private openSession() {
 		const durable = this.options.durable;
 		const host = durable?.host ?? createHarnessHost();
-		const { recover, canJoin, onModelError } = this.options;
+		const { canJoin, onModelError } = this.options;
 		const modelErrors = onModelError ?? (durable ? retryModelErrors : undefined);
 		const harness = defineHarness({
 			name: 'flue/session',
@@ -665,7 +784,15 @@ export class AgentLoop {
 				timeoutMs: 3_600_000,
 				// A cut answer keeps its calls; each gets this error result, and the model goes on.
 				truncatedToolResult: ({ toolName }) => truncatedCallText(toolName),
-				...(recover ? { recover } : {}),
+				// A cut `replay: 'never'` call gets Flue's interrupted marker.
+				interruptedToolResult: INTERRUPTED_TOOL_RESULT,
+				// A cut answer goes on after Flue's two recovery signals.
+				continueCutOff: { note: STREAM_RECOVERY_NOTES },
+				...(durable
+					? { recover: (ctx: RecoverContext) => this.recoverInput(ctx) }
+					: this.options.recover
+						? { recover: this.options.recover }
+						: {}),
 			},
 			turn: {
 				beforeFinish: (ctx) => this.beforeFinish(ctx),
@@ -892,8 +1019,13 @@ export class AgentLoop {
 			run.pending = this.drainSteering().map((steer) => steer.message);
 			return;
 		}
+		run.batch = this.createBatch(message);
+	}
+
+	private createBatch(message: AssistantMessage): ToolBatch {
+		const calls = message.content.filter((block): block is ToolCall => block.type === 'toolCall');
 		const tools = this.state.tools;
-		run.batch = {
+		return {
 			assistant: message,
 			calls,
 			sequential: calls.some(
