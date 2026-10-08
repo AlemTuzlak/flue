@@ -47,6 +47,11 @@ import {
 	handleAgentConversationRead,
 } from '../runtime/handle-conversation-routes.ts';
 import { generateAttemptId, isKeyDerivedSubmissionId } from '../runtime/ids.ts';
+import {
+	createHostRecordAppend,
+	createInstanceHarnessHost,
+	type InstanceHarnessBinding,
+} from '../runtime/instance-harness-host.ts';
 import { agentStreamPath } from '../runtime/stream-offsets.ts';
 import { createSessionStorageKey } from '../session-identity.ts';
 import type { DeliveredMessage } from '../types.ts';
@@ -120,6 +125,15 @@ interface CloudflareAgentRecoveredFiberContext {
 interface StartedSubmissionAttempt {
 	readonly submissionId: string;
 	readonly running: Promise<void>;
+}
+
+/**
+ * A claimed submission for the supervisor pass to start. `replacement` is
+ * true for the replacement attempt of an interrupted submission.
+ */
+interface SubmissionStart {
+	readonly submission: AgentSubmission;
+	readonly replacement: boolean;
 }
 
 interface CloudflareAgentPreparedCoordinator {
@@ -250,6 +264,22 @@ class CloudflareAgentCoordinator {
 
 	private conversationWriter: ConversationRecordWriter | undefined;
 	private conversationWriterCreation: Promise<ConversationRecordWriter> | undefined;
+	/**
+	 * The durable harness host of this instance. It lives as long as the
+	 * cached writer: the writer appends through it, and a dropped writer
+	 * closes it.
+	 */
+	private harnessHost: InstanceHarnessBinding | undefined;
+	private readonly harnessHostOfWriter = new WeakMap<
+		ConversationRecordWriter,
+		InstanceHarnessBinding
+	>();
+	/**
+	 * The controllers of replacement attempts. A replacement attempt recovers
+	 * the cut turn of its submission, so its lease is not alive for harness
+	 * recovery: no other attempt drives that turn.
+	 */
+	private readonly replacementControllers = new WeakSet<AbortController>();
 	private conversationMaterialization: Promise<void> = Promise.resolve();
 	/**
 	 * Context-free live event emitter for coordinator signals
@@ -385,12 +415,16 @@ class CloudflareAgentCoordinator {
 		);
 		for (const claimed of claims) {
 			try {
-				const attempt = await this.startSubmissionAttempt(claimed);
+				const attempt = await this.startSubmissionAttempt(claimed.submission, claimed.replacement);
 				if (attempt) this.watchAttempt(attempt);
 			} catch (error) {
-				this.logSubmissionReconciliationFailure(claimed, 'start_submission', error);
+				this.logSubmissionReconciliationFailure(claimed.submission, 'start_submission', error);
 			}
 		}
+		// Harness recovery after Flue's ledger: a turn on an open thread
+		// whose lease is not alive runs again, and the `recover` hook
+		// decides it.
+		await this.recoverHarnessHost();
 		// observe() deliveries are fire-and-forget on the emit path; hand
 		// whatever this pass emitted (deadline signals, force settlements) to
 		// the platform so the invocation's end can't tear them down mid-POST.
@@ -507,6 +541,11 @@ class CloudflareAgentCoordinator {
 	 * reconcile pass classifies it — so the only job here is ensuring a drain
 	 * runs. Resolving (not throwing) tells the SDK the recovery is handled,
 	 * which deletes its run row.
+	 *
+	 * A Durable Object has no graceful shutdown: an isolate death is a crash,
+	 * and nothing closes the harness host. The drain hands the interrupted
+	 * submission a replacement attempt, and its session recovers the cut
+	 * turn from the harness log.
 	 */
 	onFiberRecovered(
 		ctx: CloudflareAgentRecoveredFiberContext,
@@ -533,29 +572,93 @@ class CloudflareAgentCoordinator {
 	private async ensureConversationWriter(): Promise<ConversationRecordWriter> {
 		if (this.conversationWriter && !this.conversationWriter.failed) return this.conversationWriter;
 		if (!this.conversationWriterCreation) {
-			const creation = ConversationRecordWriter.create({
+			const path = agentStreamPath(this.agentName, this.instance.name);
+			const identity = { agentName: this.agentName, instanceId: this.instance.name };
+			const binding = {
+				host: createInstanceHarnessHost({
+					streams: this.prepared.conversationStreamStore,
+					submissions: this.submissions,
+					path,
+					identity,
+					ownerId: this.instance.ctx.id.toString(),
+					isLive: (inputId) => this.isAttemptLive(inputId),
+				}),
+				logId: path,
+			};
+			this.harnessHost = binding;
+			const creation = ConversationRecordWriter.overHarness({
 				store: this.prepared.conversationStreamStore,
-				path: agentStreamPath(this.agentName, this.instance.name),
-				identity: { agentName: this.agentName, instanceId: this.instance.name },
-				producerId: this.instance.ctx.id.toString(),
+				path,
+				identity,
+				append: createHostRecordAppend(binding),
 				onFailed: (writer) => {
-					if (this.conversationWriter === writer) this.conversationWriter = undefined;
+					if (this.conversationWriter === writer) this.dropConversationWriter();
 				},
 			});
 			this.conversationWriterCreation = creation;
 			void creation.then(
 				(writer) => {
+					this.harnessHostOfWriter.set(writer, binding);
 					if (!writer.failed) this.conversationWriter = writer;
 					if (this.conversationWriterCreation === creation)
 						this.conversationWriterCreation = undefined;
 				},
 				() => {
-					if (this.conversationWriterCreation === creation)
-						this.conversationWriterCreation = undefined;
+					if (this.conversationWriterCreation === creation) this.dropConversationWriter();
 				},
 			);
 		}
 		return this.conversationWriterCreation;
+	}
+
+	/**
+	 * Drop the cached writer and close its harness host as a stop: running
+	 * turns stop with no settlement, and the next host of the instance
+	 * recovers them. The next `ensureConversationWriter` creates both again.
+	 */
+	private dropConversationWriter() {
+		const binding = this.harnessHost;
+		this.conversationWriter = undefined;
+		this.conversationWriterCreation = undefined;
+		this.harnessHost = undefined;
+		void binding?.host.close({ recoverable: true }).catch(() => {});
+	}
+
+	/**
+	 * Whether a submission lease is alive for harness recovery. It is alive
+	 * only while this isolate holds an active controller for the submission.
+	 * A Durable Object runs one isolate at a time, so no other isolate drives
+	 * the turn. A replacement attempt's own lease is not alive: it recovers
+	 * the cut turn.
+	 */
+	private isAttemptLive(submissionId: string) {
+		const controller = this.activeControllers.get(submissionId);
+		return controller !== undefined && !this.replacementControllers.has(controller);
+	}
+
+	/**
+	 * The harness recovery check of the wake pass, after Flue's reconcile. A
+	 * turn on an open thread whose lease is not alive runs again, and the
+	 * harness `recover` hook decides it by Flue's ledger rules. It does not
+	 * run while an attempt is active in this isolate: that attempt recovers
+	 * through its own session, and a second recovery would run it twice.
+	 */
+	private async recoverHarnessHost() {
+		const binding = this.harnessHost;
+		if (!binding || this.activeControllers.size > 0) return;
+		try {
+			await binding.host.recover();
+		} catch (error) {
+			this.emitCoordinatorEvent(
+				{
+					type: 'submission_recovery',
+					operation: 'reconcile_pass',
+					outcome: 'deferred',
+					error: serializeSubmissionError(error),
+				},
+				{ errorInfo: classifyError(error) },
+			);
+		}
 	}
 
 	private createContext(request: Request, submissionId?: string): FlueContextInternal {
@@ -570,7 +673,9 @@ class CloudflareAgentCoordinator {
 
 	private createDurableContext(request: Request, submissionId?: string): FlueContextInternal {
 		const ctx = this.createContext(request, submissionId);
-		ctx.setConversationWriter?.(this.conversationWriter);
+		const writer = this.conversationWriter;
+		ctx.setConversationWriter?.(writer);
+		ctx.setHarnessHost?.(writer ? this.harnessHostOfWriter.get(writer) : undefined);
 		ctx.setAttachmentStore?.(this.prepared.attachmentStore);
 		ctx.setMcpConnections?.(this.mcpConnections);
 		return ctx;
@@ -624,8 +729,8 @@ class CloudflareAgentCoordinator {
 	 * Failures are logged with `deferred_to_scheduled_wake` and surface as
 	 * still-unsettled work the heartbeat owns.
 	 */
-	private async reconcileSubmissions(): Promise<ReadonlyArray<AgentSubmission>> {
-		const toStart: Array<AgentSubmission> = [];
+	private async reconcileSubmissions(): Promise<ReadonlyArray<SubmissionStart>> {
+		const toStart: Array<SubmissionStart> = [];
 		if (!(await this.submissions.hasUnsettledSubmissions())) return toStart;
 		try {
 			for (const submission of await this.submissions.listUnreadySubmissions()) {
@@ -727,11 +832,15 @@ class CloudflareAgentCoordinator {
 					continue;
 				}
 				try {
+					// Rotate the cached writer and its harness host first, so the
+					// settlement runs on a fresh producer and a fresh host. The
+					// stale host stops the hung turn with no settlement.
+					if (liveController) this.dropConversationWriter();
 					const replacement = await this.reconcileInterruptedSubmission(submission);
 					// The attempt fiber starts after the reconcile pass returns —
 					// see supervisorPass for why starts must escape the pass's
 					// tracing activation.
-					if (replacement) toStart.push(replacement);
+					if (replacement) toStart.push({ submission: replacement, replacement: true });
 					if (liveController) this.orphanEnforcedAttempt(submission.submissionId, liveController);
 				} catch (error) {
 					this.logSubmissionReconciliationFailure(submission, 'reconcile_submission', error);
@@ -748,7 +857,7 @@ class CloudflareAgentCoordinator {
 					ownerId: this.instance.ctx.id.toString(),
 					leaseExpiresAt: 0,
 				});
-				if (claimed) toStart.push(claimed);
+				if (claimed) toStart.push({ submission: claimed, replacement: false });
 			}
 		} catch (error) {
 			console.error(
@@ -946,10 +1055,12 @@ class CloudflareAgentCoordinator {
 	 */
 	private async startSubmissionAttempt(
 		submission: AgentSubmission,
+		replacement: boolean,
 	): Promise<StartedSubmissionAttempt | undefined> {
 		if (submission.status !== 'running' || !submission.attemptId) return undefined;
 		this.assertAgentsDurabilityApi('runFiber');
 		const controller = new AbortController();
+		if (replacement) this.replacementControllers.add(controller);
 		this.activeControllers.set(submission.submissionId, controller);
 		let running: Promise<void>;
 		try {
@@ -1018,15 +1129,13 @@ class CloudflareAgentCoordinator {
 
 	/**
 	 * After deadline enforcement settled over a live-but-hung fiber, orphan
-	 * it: drop its controller entry (its own finally-cleanup is unreachable)
-	 * and rotate the cached conversation writer so later sessions acquire a
-	 * fresh producer — a waking zombie's rejected append then fails only the
-	 * stale writer object it holds, never a successor's.
+	 * it: drop its controller entry (its own finally-cleanup is unreachable).
+	 * The cached conversation writer and its host were rotated before the
+	 * settlement, so a waking zombie's rejected append fails only the stale
+	 * writer object it holds, never a successor's.
 	 */
 	private orphanEnforcedAttempt(submissionId: string, controller: AbortController): void {
 		this.deleteControllerIfCurrent(submissionId, controller);
-		this.conversationWriter = undefined;
-		this.conversationWriterCreation = undefined;
 	}
 
 	async abortInstance(): Promise<boolean> {

@@ -12,6 +12,9 @@
  *   `__flueWakeAgentSubmissions` schedule target delegate to the shared
  *   Cloudflare agent runtime; `onStart`/`onFiberRecovered` forward to an
  *   inherited implementation when the (possibly extended) base defines one.
+ * - An isolate death is a crash: a Durable Object has no graceful shutdown.
+ *   `onFiberRecovered` and the alarm wake recover the cut turns on the
+ *   durable harness host.
  * - The module's `extend({ base, wrap })` export is resolved via
  *   `resolveCloudflareExtension`: `base` reshapes the superclass, `wrap`
  *   wraps the final class, and the wrapped class is what gets exported.
