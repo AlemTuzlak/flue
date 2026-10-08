@@ -15,7 +15,6 @@
 		"changeset": "changeset",
 		"release": "pnpm run build && pnpm run build:docs && changeset publish",
 		"test": "turbo test",
-		"test:integration": "pnpm --dir packages/vite run test:integration:cloudflare",
 		"test:package-docs": "node scripts/smoke-test-package-docs.mjs",
 		"check": "turbo run build check:lint check:types && turbo run test",
 		"check:lint": "biome lint . && knip",

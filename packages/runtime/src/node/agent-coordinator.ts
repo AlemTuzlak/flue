@@ -36,6 +36,11 @@ import type { DispatchInput, DispatchQueue } from '../runtime/dispatch-queue.ts'
 import { type CoordinatorEventEmitter, createCoordinatorEventEmitter } from '../runtime/events.ts';
 import type { CreateAgentContextFn } from '../runtime/handle-agent.ts';
 import { generateAttemptId, generateOwnerId, isKeyDerivedSubmissionId } from '../runtime/ids.ts';
+import {
+	createHostRecordAppend,
+	createInstanceHarnessHost,
+	type InstanceHarnessBinding,
+} from '../runtime/instance-harness-host.ts';
 import type { RuntimeActivityGate } from '../runtime/runtime-activity-gate.ts';
 import { agentStreamPath } from '../runtime/stream-offsets.ts';
 import { createSessionStorageKey } from '../session-identity.ts';
@@ -83,10 +88,14 @@ export interface NodeAgentCoordinator {
 	 */
 	waitForIdle(): Promise<void>;
 	/**
-	 * Graceful shutdown. Stops accepting new work, aborts active submissions
-	 * at the turn boundary, and waits for settlement with a timeout. Submissions
-	 * that don't settle within the timeout are abandoned — their expired leases
-	 * will be reclaimed on next startup via {@link reconcileSubmissions}.
+	 * Graceful shutdown. Stops accepting new work and waits for the claim loop
+	 * to exit. Then it closes each instance harness host with
+	 * `{ recoverable: true }`, so running turns stop with no settlement, and
+	 * aborts the active sessions. It waits up to `timeoutMs` (default 30000)
+	 * for the active submission tasks to finish, then stops the heartbeat and
+	 * closes the cached MCP connections. Shutdown does not settle the stopped
+	 * submissions. They stay `running`, so the next startup reclaims them via
+	 * {@link reconcileSubmissions} and continues the stopped turns.
 	 */
 	shutdown(timeoutMs?: number): Promise<void>;
 }
@@ -142,6 +151,10 @@ export function createNodeAgentCoordinator(options: {
 	} = options;
 	const coordinatorEnv = options.env ?? {};
 	const conversationWriters = new Map<string, Promise<ConversationRecordWriter>>();
+	// The durable harness host of each instance, keyed like the writers above.
+	// Each cached writer appends through the host of its instance.
+	const harnessHosts = new Map<string, InstanceHarnessBinding>();
+	const harnessHostOfWriter = new WeakMap<ConversationRecordWriter, InstanceHarnessBinding>();
 	const conversationMaterializations = new Map<string, Promise<unknown>>();
 	// Live MCP connections, keyed per instance stream path like the writers
 	// above: submissions reuse an instance's connections for the process
@@ -188,7 +201,10 @@ export function createNodeAgentCoordinator(options: {
 	// ── Concurrent claim loop state ──────────────────────────────────────
 
 	/** Submissions currently being processed, keyed by submissionId. */
-	const activeSubmissions = new Map<string, { task: Promise<void>; abort: AbortController }>();
+	const activeSubmissions = new Map<
+		string,
+		{ task: Promise<void>; abort: AbortController; path: string }
+	>();
 
 	/**
 	 * Wake signal. The claim loop sleeps on `wakePromise` when there is
@@ -220,6 +236,16 @@ export function createNodeAgentCoordinator(options: {
 	 *  loop stops claiming new work and admissions are rejected. */
 	let stopping = false;
 
+	/** True once shutdown closed the instance hosts. Running turns then stop with no settlement. */
+	let hostsClosed = false;
+
+	/** A submission that shutdown stopped. Its row stays running, and the next start recovers it. */
+	function isShutdownStop(error: unknown) {
+		return (
+			stopping && (hostsClosed || (error instanceof DOMException && error.name === 'AbortError'))
+		);
+	}
+
 	function resetWakePromise(): void {
 		wakePromise = new Promise<void>((resolve) => {
 			wakeResolve = resolve;
@@ -244,24 +270,72 @@ export function createNodeAgentCoordinator(options: {
 		input: AgentSubmissionInput,
 	): Promise<ConversationRecordWriter | undefined> {
 		if (!conversationStreamStore) return Promise.resolve(undefined);
+		const store = conversationStreamStore;
 		const path = agentStreamPath(input.agent, input.id);
 		let writer = conversationWriters.get(path);
 		if (!writer) {
-			writer = ConversationRecordWriter.create({
-				store: conversationStreamStore,
+			const identity = { agentName: input.agent, instanceId: input.id };
+			const binding = {
+				host: createInstanceHarnessHost({ streams: store, submissions, path, identity, ownerId }),
+				logId: path,
+			};
+			const created = ConversationRecordWriter.overHarness({
+				store,
 				path,
-				identity: { agentName: input.agent, instanceId: input.id },
-				producerId: ownerId,
-				onFailed: () => {
-					if (conversationWriters.get(path) === writer) conversationWriters.delete(path);
-				},
+				identity,
+				append: createHostRecordAppend(binding),
+				onFailed: () => dropConversationWriter(path, created),
+			}).then((value) => {
+				harnessHostOfWriter.set(value, binding);
+				return value;
 			});
-			conversationWriters.set(path, writer);
-			void writer.catch(() => {
-				if (conversationWriters.get(path) === writer) conversationWriters.delete(path);
-			});
+			writer = created;
+			conversationWriters.set(path, created);
+			harnessHosts.set(path, binding);
+			void created.catch(() => dropConversationWriter(path, created));
 		}
 		return writer;
+	}
+
+	/**
+	 * Drop the cached writer of `path` when it is still `writer`, and close
+	 * its harness host as a stop does: running turns stop with no settlement,
+	 * and the next host of the instance recovers them.
+	 */
+	function dropConversationWriter(path: string, writer: Promise<ConversationRecordWriter>) {
+		if (conversationWriters.get(path) !== writer) return;
+		conversationWriters.delete(path);
+		const binding = harnessHosts.get(path);
+		harnessHosts.delete(path);
+		void binding?.host.close({ recoverable: true }).catch(() => {});
+	}
+
+	/**
+	 * Run harness recovery on every open instance host. A turn whose lease
+	 * expired runs again, and the harness `recover` hook decides it by
+	 * Flue's ledger rules.
+	 */
+	async function recoverHarnessHosts() {
+		const activePaths = new Set([...activeSubmissions.values()].map((active) => active.path));
+		for (const [path, binding] of [...harnessHosts]) {
+			if (stopping) return;
+			// A running submission recovers through its own session, with
+			// Flue's ledger in the hook. A second recovery would run it twice.
+			if (activePaths.has(path)) continue;
+			try {
+				await binding.host.recover();
+			} catch (error) {
+				passEventEmitter(
+					{
+						type: 'submission_recovery',
+						operation: 'reconcile_pass',
+						outcome: 'deferred',
+						error: serializeSubmissionError(error),
+					},
+					{ errorInfo: classifyError(error) },
+				);
+			}
+		}
 	}
 
 	function getMcpConnections(input: AgentSubmissionInput): McpConnectionCache {
@@ -286,6 +360,7 @@ export function createNodeAgentCoordinator(options: {
 				submissionId,
 			});
 			ctx.setConversationWriter?.(writer);
+			ctx.setHarnessHost?.(writer ? harnessHostOfWriter.get(writer) : undefined);
 			ctx.setAttachmentStore?.(attachmentStore);
 			ctx.setMcpConnections?.(getMcpConnections(input));
 			return ctx;
@@ -355,13 +430,13 @@ export function createNodeAgentCoordinator(options: {
 				conversationWriter,
 				emitCoordinatorEvent,
 				signal: controller.signal,
-				isShutdownAbort: (error) =>
-					stopping && error instanceof DOMException && error.name === 'AbortError',
+				isShutdownAbort: isShutdownStop,
 			});
 		})()
 			.catch((error) => {
-				// AbortErrors during shutdown are expected — don't log them.
+				// AbortErrors and host stops during shutdown are expected — don't log them.
 				if (error instanceof DOMException && error.name === 'AbortError') return;
+				if (isShutdownStop(error)) return;
 				console.error(
 					'[flue:submission-processing]',
 					{
@@ -388,10 +463,18 @@ export function createNodeAgentCoordinator(options: {
 				);
 			})
 			.finally(() => {
-				activeSubmissions.delete(claimed.submissionId);
+				// A replacement attempt may hold the entry by now (deadline enforcement).
+				if (activeSubmissions.get(claimed.submissionId) === active) {
+					activeSubmissions.delete(claimed.submissionId);
+				}
 				wake();
 			});
-		activeSubmissions.set(claimed.submissionId, { task, abort: controller });
+		const active = {
+			task,
+			abort: controller,
+			path: agentStreamPath(claimed.input.agent, claimed.input.id),
+		};
+		activeSubmissions.set(claimed.submissionId, active);
 	}
 
 	// ── Claim loop ───────────────────────────────────────────────────────
@@ -660,8 +743,16 @@ export function createNodeAgentCoordinator(options: {
 				reason: abortRequested ? 'abort_unhonored' : 'exceeded_timeout',
 			});
 			try {
+				// Rotate the cached conversation writer and its harness host first,
+				// so the settlement runs on a fresh producer and a fresh host. The
+				// stale host stops the zombie's turn with no settlement, and a
+				// waking zombie's rejected append fails only the stale writer
+				// object it holds, never a successor's.
+				const path = agentStreamPath(submission.input.agent, submission.input.id);
+				const stale = conversationWriters.get(path);
+				if (stale) dropConversationWriter(path, stale);
 				const conversationWriter = await getConversationWriter(submission.input);
-				await reconcileInterruptedSubmission(
+				const replacement = await reconcileInterruptedSubmission(
 					submissions,
 					submission,
 					agent,
@@ -671,13 +762,12 @@ export function createNodeAgentCoordinator(options: {
 					coordinatorEventEmitter(submission.input),
 				);
 				// Orphan the zombie: drop its active entry so idleness and the
-				// claim loop key on the settled row (its own finally-cleanup is
-				// unreachable), and rotate the cached conversation writer so
-				// later sessions acquire a fresh producer — a waking zombie's
-				// rejected append then fails only the stale writer object it
-				// holds, never a successor's.
+				// claim loop key on the settled row (its own finally-cleanup may
+				// never run).
 				activeSubmissions.delete(submissionId);
-				conversationWriters.delete(agentStreamPath(submission.input.agent, submission.input.id));
+				// On the durable path, the replacement attempt opens the session,
+				// and the harness `recover` hook settles it by the deadline.
+				if (replacement) spawnSubmissionTask(replacement);
 			} catch (error) {
 				coordinatorEventEmitter(submission.input)(
 					{
@@ -939,6 +1029,9 @@ export function createNodeAgentCoordinator(options: {
 				);
 			}
 		}
+		// Harness recovery after Flue's ledger: a turn whose lease expired on
+		// an open thread runs again, and the `recover` hook decides it.
+		await recoverHarnessHosts();
 	}
 
 	// ── Public interface ─────────────────────────────────────────────────
@@ -1279,12 +1372,17 @@ export function createNodeAgentCoordinator(options: {
 			if (claimLoopDone) await claimLoopDone;
 			if (reconcilePassInFlight) await reconcilePassInFlight.catch(() => {});
 
-			// Abort all active submissions at the turn boundary. The abort
-			// signal propagates into the session, which finishes the current
-			// turn and throws AbortError. processSubmission's catch block
-			// skips failSubmission during shutdown so the submission stays
-			// in 'running' — its expired lease will trigger reclamation on
-			// next startup.
+			// Close every instance host as a stop: running turns stop with no
+			// settlement, so the next start recovers them. Then abort all
+			// active submissions, so each session unwinds. processSubmission's
+			// catch block skips failSubmission during shutdown so the
+			// submission stays in 'running' — its expired lease will trigger
+			// reclamation on next startup.
+			hostsClosed = true;
+			const hosts = [...harnessHosts.values()];
+			harnessHosts.clear();
+			conversationWriters.clear();
+			await Promise.allSettled(hosts.map((binding) => binding.host.close({ recoverable: true })));
 			for (const { abort } of activeSubmissions.values()) {
 				abort.abort(new DOMException('Coordinator shutting down.', 'AbortError'));
 			}

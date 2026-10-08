@@ -1,7 +1,5 @@
 'use agent';
-import { createProvider } from '@earendil-works/pi-ai';
-import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
-import { setProvider, useModel, useTool } from '@flue/runtime';
+import { createProvider, setProvider, useModel, useTool } from '@flue/runtime';
 
 // Custom providers for local OpenAI-compatible servers register at module
 // scope, so the agent works the same under `vite dev` and
@@ -10,7 +8,9 @@ setProvider(
 	createProvider({
 		id: 'ollama',
 		// Keyless local server: auth resolves to nothing.
-		auth: { apiKey: { name: 'Ollama (keyless)', resolve: async () => ({ auth: {} }) } },
+		auth: {
+			apiKey: { name: 'Ollama (keyless)', resolve: async () => ({ auth: {} }) },
+		},
 		models: [
 			{
 				id: 'llama3.1:8b',
@@ -25,7 +25,6 @@ setProvider(
 				maxTokens: 8192,
 			},
 		],
-		api: openAICompletionsApi(),
 	}),
 );
 

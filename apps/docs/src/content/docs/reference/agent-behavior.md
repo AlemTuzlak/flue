@@ -7,10 +7,9 @@ This page describes what a Flue agent does out of the box: the tools the model
 gets, what environment it runs in, how incoming messages are handled, what its
 context window contains, and the limits the runtime enforces. It is a map of
 runtime behavior, not an authoring API — the pages that define these behaviors
-are linked from each section. Flue's inner agent loop builds on
-[pi's](https://pi.dev) agent core; everything below is Flue's own contract, and
-where you want the pi coding agent's equivalents, see
-[pi's usage docs](https://pi.dev/docs/latest/usage).
+are linked from each section. Flue's agent loop runs on the agent
+harness of [TanStack AI](https://tanstack.com/ai). Everything below is Flue's
+own contract.
 
 ## Built-in tools
 

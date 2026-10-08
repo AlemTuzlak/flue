@@ -120,7 +120,10 @@ export function flueDependencyResolverPlugin(state: DependencyResolverState): Pl
 				for (const nodePath of collectNodePaths(root)) {
 					const packageDir = path.join(nodePath, '@hono', 'node-server');
 					if (fs.existsSync(packageDir)) {
-						return { id: path.join(packageDir, 'dist', 'index.mjs'), external: true };
+						return {
+							id: path.join(packageDir, 'dist', 'index.mjs'),
+							external: true,
+						};
 					}
 				}
 			}
@@ -141,7 +144,7 @@ function collectNodePaths(root: string): Set<string> {
 	// (so workspace-linked installs reach `@flue/vite`'s helpers), and
 	// `@flue/runtime`'s install location as resolved from the project. The
 	// latter is what surfaces the runtime deps (`@hono/node-server`, `hono`,
-	// `pi-ai`, etc.) that the generated `server.mjs` imports — `@flue/runtime`
+	// `@tanstack/ai`, etc.) that the generated `server.mjs` imports — `@flue/runtime`
 	// is the package that lists them, so the Vite build must be able to reach
 	// its `node_modules/` subtree.
 	const seeds = [root, getPackageDir()];

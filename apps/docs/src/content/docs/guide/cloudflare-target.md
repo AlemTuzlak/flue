@@ -67,7 +67,10 @@ For example, if you remove an agent that was previously deployed, append a `dele
 ```jsonc
 {
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["FlueSupportChatAgent", "FlueTriageAgent"] },
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["FlueSupportChatAgent", "FlueTriageAgent"],
+    },
     { "tag": "v2", "deleted_classes": ["FlueTriageAgent"] },
   ],
 }
@@ -183,7 +186,9 @@ import { cloudflareSandbox } from '@flue/runtime/cloudflare';
 
 export function Assistant({ id }: AgentProps) {
   useModel('anthropic/claude-sonnet-4-6');
-  useSandbox(cloudflareSandbox(getSandbox(env.Sandbox, id)), { cwd: '/workspace' });
+  useSandbox(cloudflareSandbox(getSandbox(env.Sandbox, id)), {
+    cwd: '/workspace',
+  });
 }
 ```
 
@@ -354,7 +359,11 @@ import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 function createCloudflareTracing(options?: CloudflareTracingOptions): FlueInstrumentation;
 
 interface CloudflareTracingOptions {
-  content?: false | { transform?(content: unknown, scope: GenAIContentScope): unknown | undefined };
+  content?:
+    | false
+    | {
+        transform?(content: unknown, scope: GenAIContentScope): unknown | undefined;
+      };
   contentBudgetBytes?: number; // per-span content pool, default 57_344 (56 KiB)
 }
 ```

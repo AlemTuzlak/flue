@@ -6,9 +6,9 @@
  * two surfaces.
  */
 
-import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { formatBashResult } from './agent.ts';
 import { type FlueExecutionContext, interceptExecution } from './execution-interceptor.ts';
+import type { AgentToolResult } from './llm-types.ts';
 import { generateToolCallId } from './runtime/ids.ts';
 import type {
 	FlueEventInput,
@@ -116,13 +116,24 @@ export async function execShellWithEvents(
 	}
 }
 
-function classifyShellError(error: unknown): { type: string; name?: string; message?: string } {
+function classifyShellError(error: unknown): {
+	type: string;
+	name?: string;
+	message?: string;
+} {
 	if (error instanceof DOMException && error.name === 'AbortError') {
 		return { type: 'AbortError', name: error.name, message: error.message };
 	}
 	if (error instanceof Error)
-		return { type: error.name || '_OTHER', name: error.name, message: error.message };
-	return { type: '_OTHER', ...(typeof error === 'string' ? { message: error } : {}) };
+		return {
+			type: error.name || '_OTHER',
+			name: error.name,
+			message: error.message,
+		};
+	return {
+		type: '_OTHER',
+		...(typeof error === 'string' ? { message: error } : {}),
+	};
 }
 
 export function getErrorMessage(error: unknown): string {

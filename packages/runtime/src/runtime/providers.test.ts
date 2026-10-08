@@ -1,11 +1,15 @@
-import type { Api, Model, Provider } from '@earendil-works/pi-ai';
-import { cloudflareAIGatewayProvider } from '@earendil-works/pi-ai/providers/cloudflare-ai-gateway';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cloudflareAIGatewayProvider } from '../providers/cloudflare-ai-gateway.ts';
+import {
+	createProvider,
+	type DynamicModelTemplate,
+	envApiKeyAuth,
+	type FlueModel,
+} from '../providers/provider.ts';
 import {
 	anthropicGatewayModelId,
 	DYNAMIC_MODEL_MARKER,
-	DYNAMIC_MODEL_TEMPLATE,
-	getRuntimeModels,
+	getProvider,
 	isAnthropicGatewayModel,
 	isDynamicModel,
 	resetDynamicModelWarnForTests,
@@ -15,24 +19,29 @@ import {
 	setProvider,
 } from './providers.ts';
 
-function providerWith(providerId: string, models: Model<any>[], template?: unknown): Provider {
-	const provider: Provider = {
+const ANY_ENDPOINT: DynamicModelTemplate = {
+	api: 'anthropic-messages',
+	baseUrl: 'https://example.test',
+};
+
+function providerWith(
+	providerId: string,
+	models: FlueModel[],
+	dynamicModels?: DynamicModelTemplate,
+) {
+	return createProvider({
 		id: providerId,
-		name: providerId,
 		baseUrl: 'https://example.test',
-		getModels: () => models,
-		stream: () => {
-			throw new Error('unused in this test');
-		},
-	} as unknown as Provider;
-	if (template !== undefined) {
-		(provider as unknown as Record<symbol, unknown>)[DYNAMIC_MODEL_TEMPLATE] = template;
-	}
-	return provider;
+		auth: { apiKey: envApiKeyAuth('Test API key', ['TEST_API_KEY']) },
+		models,
+		...(dynamicModels ? { dynamicModels } : {}),
+	});
 }
 
-function markerOf(model: Model<Api>): unknown {
-	return (model as Model<Api> & { [DYNAMIC_MODEL_MARKER]: true })[DYNAMIC_MODEL_MARKER];
+function registeredIds(providerId: string) {
+	return getProvider(providerId)
+		?.getModels()
+		.map((model) => model.id);
 }
 
 afterEach(() => {
@@ -44,62 +53,39 @@ afterEach(() => {
 
 describe('dynamic model templates', () => {
 	it('synthesizes a model marked as dynamic for ids no catalog knows', () => {
-		setProvider(
-			providerWith('test', [], {
-				api: 'anthropic-messages',
-				baseUrl: 'https://example.test',
-			}),
-		);
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		setProvider(providerWith('test', [], ANY_ENDPOINT));
 		const model = resolveModel('test/fresh-model');
 		expect(model.id).toBe('fresh-model');
 		expect(isDynamicModel(model)).toBe(true);
-		expect(markerOf(model)).toBe(true);
+		expect(Reflect.get(model, DYNAMIC_MODEL_MARKER)).toBe(true);
 	});
 
-	it('keeps a zero cost table so pi-ai can compute usage', () => {
-		setProvider(
-			providerWith('test', [], {
-				api: 'anthropic-messages',
-				baseUrl: 'https://example.test',
-			}),
-		);
+	it('keeps a zero cost table so usage can be computed', () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		setProvider(providerWith('test', [], ANY_ENDPOINT));
 		const model = resolveModel('test/fresh-model');
-		expect(model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		expect(model.cost).toEqual({
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		});
 		// `shouldCompact` treats a non-positive window as unknown.
 		expect(model.contextWindow).toBe(0);
 		expect(model.maxTokens).toBe(0);
 	});
 
 	it('does not mark catalog models', () => {
-		setProvider(
-			providerWith('test', [
-				{
-					id: 'known-model',
-					name: 'Known Model',
-					api: 'anthropic-messages',
-					provider: 'test',
-					baseUrl: 'https://example.test',
-					reasoning: false,
-					input: ['text'],
-					cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
-					contextWindow: 1000,
-					maxTokens: 500,
-				},
-			]),
-		);
+		setProvider(providerWith('test', [catalogModel('test', 'known-model')]));
 		const model = resolveModel('test/known-model');
 		expect(isDynamicModel(model)).toBe(false);
-		expect(markerOf(model)).toBeUndefined();
+		expect(Reflect.get(model, DYNAMIC_MODEL_MARKER)).toBeUndefined();
 	});
 
 	it('warns once per process when the template is used', () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		setProvider(
-			providerWith('test', [], {
-				api: 'anthropic-messages',
-				baseUrl: 'https://example.test',
-			}),
-		);
+		setProvider(providerWith('test', [], ANY_ENDPOINT));
 		resolveModel('test/first-unknown');
 		resolveModel('test/second-unknown');
 		expect(warn).toHaveBeenCalledTimes(1);
@@ -108,7 +94,7 @@ describe('dynamic model templates', () => {
 	});
 });
 
-function catalogModel(providerId: string, id: string): Model<Api> {
+function catalogModel(providerId: string, id: string): FlueModel {
 	return {
 		id,
 		name: id,
@@ -167,12 +153,7 @@ describe('version-separator aliases', () => {
 
 	it('prefers an alias over dynamic synthesis', () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
-		setProvider(
-			providerWith('test', [catalogModel('test', 'claude-sonnet-4.6')], {
-				api: 'anthropic-messages',
-				baseUrl: 'https://example.test',
-			}),
-		);
+		setProvider(providerWith('test', [catalogModel('test', 'claude-sonnet-4.6')], ANY_ENDPOINT));
 		const model = resolveModel('test/claude-sonnet-4-6');
 		expect(model.id).toBe('claude-sonnet-4.6');
 		expect(isDynamicModel(model)).toBe(false);
@@ -188,9 +169,10 @@ describe('version-separator aliases', () => {
 	});
 });
 
-const GATEWAY_BASE = 'https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}';
+const GATEWAY_BASE =
+	'https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}';
 
-function gatewayModel(id: string, api: Api, vendor: string): Model<Api> {
+function gatewayModel(id: string, api: string, vendor: string): FlueModel {
 	return {
 		...catalogModel('cloudflare-ai-gateway', id),
 		api,
@@ -215,7 +197,7 @@ describe('Cloudflare AI Gateway Anthropic ids', () => {
 				gatewayModel('workers-ai/@cf/moonshotai/kimi-k2.6', 'openai-completions', 'compat'),
 			]),
 		);
-		expect(getRuntimeModels().getModels('cloudflare-ai-gateway').map((model) => model.id)).toEqual([
+		expect(registeredIds('cloudflare-ai-gateway')).toEqual([
 			'claude-sonnet-4-6',
 			'claude-opus-5',
 			'gpt-5.6-terra',
@@ -241,27 +223,32 @@ describe('Cloudflare AI Gateway Anthropic ids', () => {
 				gatewayModel('claude-sonnet-4-6', 'anthropic-messages', 'anthropic'),
 			]),
 		);
-		expect(getRuntimeModels().getModels('cloudflare-ai-gateway').map((model) => model.id)).toEqual([
-			'claude-sonnet-4-6',
-		]);
+		expect(registeredIds('cloudflare-ai-gateway')).toEqual(['claude-sonnet-4-6']);
 	});
 
 	it('leaves other providers unchanged', () => {
 		setProvider(
 			providerWith('cloudflare', [
-				{ ...gatewayModel('anthropic/claude-sonnet-4.6', 'anthropic-messages', 'anthropic'), provider: 'cloudflare' },
+				{
+					...gatewayModel('anthropic/claude-sonnet-4.6', 'anthropic-messages', 'anthropic'),
+					provider: 'cloudflare',
+				},
 			]),
 		);
-		expect(resolveModel('cloudflare/anthropic/claude-sonnet-4.6').id).toBe('anthropic/claude-sonnet-4.6');
+		expect(resolveModel('cloudflare/anthropic/claude-sonnet-4.6').id).toBe(
+			'anthropic/claude-sonnet-4.6',
+		);
 	});
 
-	it('leaves no dotted Anthropic ids in the shipped pi-ai gateway catalog', () => {
+	it('leaves no dotted Anthropic ids in the shipped gateway catalog', () => {
 		setProvider(cloudflareAIGatewayProvider());
-		const anthropic = getRuntimeModels()
-			.getModels('cloudflare-ai-gateway')
-			.filter(isAnthropicGatewayModel);
+		const anthropic = (getProvider('cloudflare-ai-gateway')?.getModels() ?? []).filter(
+			isAnthropicGatewayModel,
+		);
 		expect(anthropic.length).toBeGreaterThan(0);
-		expect(anthropic.filter((model) => /\d\.\d/.test(model.id)).map((model) => model.id)).toEqual([]);
+		expect(anthropic.filter((model) => /\d\.\d/.test(model.id)).map((model) => model.id)).toEqual(
+			[],
+		);
 		expect(resolveModel('cloudflare-ai-gateway/claude-sonnet-4-6').id).toBe('claude-sonnet-4-6');
 	});
 });

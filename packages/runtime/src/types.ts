@@ -1,20 +1,13 @@
-import type { AgentMessage, AgentTool, ThinkingLevel } from '@earendil-works/pi-agent-core';
-import type { ImageContent, Model } from '@earendil-works/pi-ai';
+import type {
+	AgentMessage,
+	AgentTool,
+	ImageContent,
+	SignalMessage,
+	ThinkingLevel,
+} from './llm-types.ts';
+import type { FlueModel } from './providers/provider.ts';
 
-export interface SignalMessage {
-	role: 'signal';
-	type: string;
-	tagName?: string;
-	content: string;
-	attributes?: Record<string, string>;
-	timestamp: number;
-}
-
-declare module '@earendil-works/pi-agent-core' {
-	interface CustomAgentMessages {
-		signal: SignalMessage;
-	}
-}
+export type { SignalMessage };
 
 import type * as v from 'valibot';
 import type { McpConnectionDefinition } from './mcp-types.ts';
@@ -40,7 +33,9 @@ export type { ThinkingLevel };
  * (carried on the wire and the canonical record, but not part of the model
  * content shape).
  */
-export type DeliveredAttachment = (PromptImage | PromptDocument) & { filename?: string };
+export type DeliveredAttachment = (PromptImage | PromptDocument) & {
+	filename?: string;
+};
 
 /**
  * A message delivered into an agent's session — the single unified input
@@ -459,9 +454,9 @@ export interface AgentConfig {
 	skills: Record<string, RegisteredSkill>;
 	subagents?: Record<string, SubagentDefinition>;
 	/** Agent-wide default model. Per-call values override this. */
-	model: Model<any>;
-	/** Resolve a model specifier to a Model instance. Throws on invalid specifiers. */
-	resolveModel: (model: string) => Model<any> | undefined;
+	model: FlueModel;
+	/** Resolve a model specifier to a model. Throws on invalid specifiers. */
+	resolveModel: (model: string) => FlueModel | undefined;
 	/**
 	 * Agent-wide default reasoning effort. Per-call values override this. The
 	 * harness substitutes `"medium"` when unset; see `AgentRuntimeConfig.thinkingLevel`.
@@ -1047,7 +1042,11 @@ export interface SandboxFactory {
 export interface BashLike {
 	exec(
 		command: string,
-		options?: { cwd?: string; env?: Record<string, string>; signal?: AbortSignal },
+		options?: {
+			cwd?: string;
+			env?: Record<string, string>;
+			signal?: AbortSignal;
+		},
 	): Promise<ShellResult>;
 	getCwd(): string;
 	fs: {
@@ -1258,7 +1257,13 @@ type FlueEventVariant =
 			response: ModelResponse;
 			isError: boolean;
 	  }
-	| { type: 'task_start'; taskId: string; prompt: string; agent?: string; cwd?: string }
+	| {
+			type: 'task_start';
+			taskId: string;
+			prompt: string;
+			agent?: string;
+			cwd?: string;
+	  }
 	| {
 			type: 'task';
 			taskId: string;

@@ -31,8 +31,8 @@ import type {
 /**
  * Durable hook state made available to one render: the reduced snapshot to
  * read values from, and the store setters write through. Absent when there is
- * no durable runtime behind the render (direct `renderAgentFunction` calls in
- * tests/tooling) — `usePersistentState` then reads defaults and its setters throw.
+ * no durable runtime behind the render (direct `renderAgentFunctionWithStructure`
+ * calls in tests/tooling) — `usePersistentState` then reads defaults and its setters throw.
  */
 export interface RenderStateContext {
 	snapshot: ReadonlyMap<string, unknown>;

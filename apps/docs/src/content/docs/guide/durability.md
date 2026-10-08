@@ -22,6 +22,8 @@ Aborts follow the same discipline. `POST /:id/abort` (or the SDK's `abort()`) re
 
 A crash leaves no record of itself — the dead process stops writing. Recovery runs when a replacement owner wakes ([how that happens is per-target](#recovery-by-target)) and works exclusively from durable evidence: the canonical conversation records, the submission's admission row, and its attempt bookkeeping.
 
+The conversation stream also holds the model context of each conversation and the state of the interrupted turn. This state includes the model calls, the tool calls, and the recorded tool results of the turn. Recovery continues that same turn from this state.
+
 Recovery proceeds in two phases. First it **converges** the stream: any partially streamed assistant output the dead attempt persisted is closed out as an aborted entry — unconditionally and idempotently, so no crash shape can leave the conversation looking mid-stream. The partial output stays preserved in history. Then it **classifies** what the records prove and continues from there:
 
 | Durable evidence after the input                | What recovery does                                                                  |
@@ -123,7 +125,7 @@ On Node, a coordinator inside your server process owns submission processing. Ow
 - **Startup reconciliation.** A replacement process scans for interrupted work when it boots and requeues it, then begins serving immediately while that work settles in the background. Ordering is preserved per conversation — recovered work runs ahead of newly delivered work, so a restart never reorders a conversation's timeline.
 - **Periodic lease scans.** While running, the coordinator scans for expired leases, so work stranded by a fast restart — where the new process boots before the old lease expires — is reclaimed within seconds rather than waiting for another restart.
 
-Graceful shutdown aborts active submissions at the turn boundary and waits for them to settle; work that does not settle in time is left running with its lease intact, and the next startup reclaims it after expiry.
+Graceful shutdown stops the running turns without settling them. Each stopped submission stays `running` in the database, and its lease expires. The next startup reclaims the submission and continues the stopped turn from its durable state, as after a crash.
 
 Two consequences for deployment:
 

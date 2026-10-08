@@ -28,10 +28,10 @@
  * `RETRYABLE_INTERRUPTION_MARKER` until pi-ai grows structured error fields.)
  */
 
-import type { AssistantMessage, AssistantMessageDiagnostic } from '@earendil-works/pi-ai';
+import type { AssistantMessage, AssistantMessageDiagnostic } from './llm-types.ts';
 
 /** Diagnostic `type` under which providers attach response metadata. */
-export const PROVIDER_RESPONSE_DIAGNOSTIC = 'flue:provider_response';
+const PROVIDER_RESPONSE_DIAGNOSTIC = 'flue:provider_response';
 
 /**
  * Allowlisted provider-response metadata projected onto `turn` observations.
@@ -95,6 +95,24 @@ export function readProviderResponseDiagnostics(
 	)?.details;
 	if (!details) return undefined;
 	const picked = pickAllowlisted(details as ProviderResponseDiagnostics);
+	return Object.keys(picked).length > 0 ? picked : undefined;
+}
+
+/**
+ * The provider-response metadata that an adapter put on a stream chunk, in
+ * `metadata.flue.providerResponse` (the Workers AI binding provider does).
+ * Unknown fields are dropped.
+ */
+export function chunkProviderResponseDiagnostics(chunk: {
+	metadata?: unknown;
+}): ProviderResponseDiagnostics | undefined {
+	const flue = Reflect.get(Object(chunk.metadata), 'flue');
+	const details = Reflect.get(Object(flue), 'providerResponse');
+	if (typeof details !== 'object' || details === null) return undefined;
+	const picked = pickAllowlisted({
+		providerFinishReason: Reflect.get(details, 'providerFinishReason'),
+		gatewayLogId: Reflect.get(details, 'gatewayLogId'),
+	});
 	return Object.keys(picked).length > 0 ? picked : undefined;
 }
 

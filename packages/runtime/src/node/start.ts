@@ -10,8 +10,8 @@
  * work directly and no bootstrap is needed.
  */
 
-import type { Provider } from '@earendil-works/pi-ai';
 import type { PersistenceAdapter } from '../agent-execution-store.ts';
+import type { Provider } from '../providers/provider.ts';
 import { registerDefaultProviders } from '../runtime/builtin-providers.ts';
 import { getFlueRuntime } from '../runtime/flue-app.ts';
 import { setProvider } from '../runtime/providers.ts';
@@ -53,11 +53,11 @@ export interface StartOptions {
 	/** Runtime environment. Defaults to `process.env`. */
 	env?: Record<string, string | undefined>;
 	/**
-	 * The providers this runtime registers, replacing the default set. Pass pi
-	 * Provider objects — built-in factories (`anthropicProvider()` from
-	 * `@earendil-works/pi-ai/providers/anthropic`), `createProvider(...)`
+	 * The providers this runtime registers, replacing the default set. Pass
+	 * Flue providers — built-in factories (`anthropicProvider()` from
+	 * `@flue/runtime/providers/anthropic`), `createProvider(...)`
 	 * customs, or a faux provider's `.provider` in tests. Omitted registers
-	 * every pi built-in; an empty array registers none.
+	 * every built-in; an empty array registers none.
 	 */
 	providers?: readonly Provider[];
 }
@@ -80,7 +80,7 @@ export interface Flue {
  * settled replies, the top-level `dispatch()` to fire-and-forget.
  *
  * ```ts
- * import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
+ * import { anthropicProvider } from '@flue/runtime/providers/anthropic';
  * import { init } from '@flue/runtime';
  * import { sqlite, start } from '@flue/runtime/node';
  * import { Reporter } from '../src/agents/reporter.ts';
@@ -88,7 +88,7 @@ export interface Flue {
  * await using flue = await start({
  *   agents: [Reporter], // the function IS the agent
  *   db: sqlite('./nightly.db'), // omit for in-memory
- *   providers: [anthropicProvider()], // omit for every pi built-in
+ *   providers: [anthropicProvider()], // omit for every built-in
  * });
  *
  * const agent = init(Reporter, { id: `nightly-${date}` });
@@ -163,7 +163,10 @@ function normalizeStartAgentEntry(record: StartAgentEntry): FlueAgentRegistratio
 			'[flue] start() agents entries must be agent functions or { agent, name? } records.',
 		);
 	}
-	return { identity: requireIdentity(record.agent, record.name), agent: record.agent };
+	return {
+		identity: requireIdentity(record.agent, record.name),
+		agent: record.agent,
+	};
 }
 
 function requireIdentity(agent: Agent, override: string | undefined): string {

@@ -1,7 +1,7 @@
-import { fauxAssistantMessage, fauxProvider, fauxText } from '@earendil-works/pi-ai';
 import { expect, it } from 'vitest';
 import { init, instrument, useModel } from './index.ts';
 import { sqlite, start } from './node/index.ts';
+import { fauxAssistantMessage, fauxProvider, fauxText } from './test-utils/faux.ts';
 import type { FlueObservation } from './types.ts';
 
 const longMessage = 'x'.repeat(70_000);
@@ -17,8 +17,12 @@ it('settles a completed response after silent-overflow compaction', async () => 
 	});
 	faux.setResponses([
 		fauxAssistantMessage([fauxText('First response.')], { stopReason: 'stop' }),
-		fauxAssistantMessage([fauxText('Completed response.')], { stopReason: 'stop' }),
-		fauxAssistantMessage([fauxText('Conversation summary.')], { stopReason: 'stop' }),
+		fauxAssistantMessage([fauxText('Completed response.')], {
+			stopReason: 'stop',
+		}),
+		fauxAssistantMessage([fauxText('Conversation summary.')], {
+			stopReason: 'stop',
+		}),
 	]);
 	const observations: FlueObservation[] = [];
 	const disposeInstrumentation = instrument({
@@ -67,8 +71,12 @@ it('still retries error-based overflow after compaction', async () => {
 			stopReason: 'error',
 			errorMessage: 'Request exceeds the context window.',
 		}),
-		fauxAssistantMessage([fauxText('Conversation summary.')], { stopReason: 'stop' }),
-		fauxAssistantMessage([fauxText('Recovered response.')], { stopReason: 'stop' }),
+		fauxAssistantMessage([fauxText('Conversation summary.')], {
+			stopReason: 'stop',
+		}),
+		fauxAssistantMessage([fauxText('Recovered response.')], {
+			stopReason: 'stop',
+		}),
 	]);
 	const runtime = await start({
 		agents: [OverflowAgent],

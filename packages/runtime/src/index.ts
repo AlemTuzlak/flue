@@ -95,6 +95,18 @@ export type {
 	ResponseStartContext,
 } from './message-output.ts';
 export type { FlueObservationSubscriber } from './observation.ts';
+export {
+	type ApiKeyAuth,
+	type AuthContext,
+	type AuthResult,
+	type CreateProviderConfig,
+	createProvider,
+	envApiKeyAuth,
+	type FlueModel,
+	type ModelAuth,
+	type Provider,
+	type ProviderAuth,
+} from './providers/provider.ts';
 export { ResultUnavailableError } from './result.ts';
 export type { ChannelRouteDefinition } from './runtime/channel-routes.ts';
 export { createChannelRouter } from './runtime/channel-routes.ts';

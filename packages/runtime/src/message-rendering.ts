@@ -1,5 +1,4 @@
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type { UserMessage } from '@earendil-works/pi-ai';
+import type { AgentMessage, UserMessage } from './llm-types.ts';
 import type { PromptImage, SignalMessage } from './types.ts';
 
 export function createUserContextMessage(

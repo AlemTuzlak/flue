@@ -10,8 +10,8 @@ import CopyPrompt from '../../../components/docs/CopyPrompt.astro';
 
 ## Prerequisites
 
-- **Node.js** — `>=22.19.0` minimum required version.
-- **LLM** — API key(s) to connect to your favorite model provider. Flue is built on Pi, and supports [all Pi providers](https://pi.dev/docs/latest/providers) out of the box. Flue's [Cloudflare runtime](/docs/guide/cloudflare-target/) provides a built-in `cloudflare/*` AI gateway, no API keys required.
+- **Node.js**: `>=22.19.0` minimum required version.
+- **LLM**: API key(s) to connect to your favorite model provider. Flue is built on [TanStack AI](https://tanstack.com/ai) and supports the major model providers out of the box (see [Built-in providers](/docs/reference/provider-api/#built-in-providers)). Flue's [Cloudflare runtime](/docs/guide/cloudflare-target/) provides a built-in `cloudflare/*` AI gateway, no API keys required.
 
 ## Automatic Installation
 
@@ -59,7 +59,7 @@ export function Assistant() {
 
 Congratulations, you just built your first agent! From here you can shape its behavior and add capabilities — or keep going and put it behind a real server.
 
-You can use any [Model/Provider](/docs/guide/models/) that Pi supports. In the example above, we use Claude Haiku. Whichever you choose, just be sure to provide the required API keys to the agent runtime. Its recommended to use a `.env` file to manage your API keys:
+You can use any [model and provider](/docs/guide/models/) that Flue supports. In the example above, we use Claude Haiku. Whichever you choose, just be sure to provide the required API keys to the agent runtime. Its recommended to use a `.env` file to manage your API keys:
 
 ```
 # .env

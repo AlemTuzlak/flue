@@ -70,9 +70,9 @@ export interface FlueConfig {
 	 */
 	agents?: string;
 	/**
-	 * Built-in pi-ai providers registered at server start, by provider ID
+	 * Built-in providers registered at server start, by provider ID
 	 * (`['anthropic', 'openai']`). Each entry maps to a
-	 * `@earendil-works/pi-ai/providers/<id>` factory import in the generated
+	 * `@flue/runtime/providers/<id>` import in the generated
 	 * entry, so only the listed providers ship in the build. Omitted registers
 	 * every built-in provider. Custom providers are unaffected — register
 	 * those with `setProvider()` in `app.ts`.
@@ -112,7 +112,7 @@ const NonEmptyPathSchema = v.pipe(v.string(), v.minLength(1, 'Path must not be e
 
 const ProviderIdSchema = v.pipe(
 	v.string(),
-	// Provider IDs become `@earendil-works/pi-ai/providers/<id>` import
+	// Provider IDs become `@flue/runtime/providers/<id>` import
 	// specifiers in generated code; reject anything that couldn't be one.
 	v.regex(/^[a-z0-9][a-z0-9-]*$/, 'Provider IDs are lowercase alphanumerics and dashes.'),
 );

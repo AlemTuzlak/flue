@@ -2,6 +2,7 @@ packages: [packages/*, examples/*, apps/*, demo]
 allowBuilds:
   '@google/genai': false
   '@mongodb-js/zstd': false
+  '@openrouter/sdk': false
   braintrust: false
   core-js-pure: false
   esbuild: false
@@ -12,6 +13,12 @@ allowBuilds:
   sharp: true
   workerd: false
 minimumReleaseAge: 1440
+# The TanStack AI preview packages come from pkg.pr.new and load each other by
+# URL, which this check blocks even when the URLs are pinned. The `overrides`
+# below pin every one of them to a single full commit SHA, and the lockfile
+# records an integrity hash for each tarball.
+# Remove this line when TanStack AI is on npm.
+blockExoticSubdeps: false
 resolutionMode: highest
 minimumReleaseAgeExclude:
   # The internal registry gateway omits the "time" metadata field, so the
@@ -25,10 +32,8 @@ minimumReleaseAgeExclude:
   - workerd
   - miniflare
   - '@ai-sdk/*'
-  - '@earendil-works/pi-ai'
-  - '@earendil-works/pi-agent-core'
-  # Vendor SDKs pinned exactly by @earendil-works/pi-ai; the pi release
-  # cadence is the effective gate for these.
+  # Vendor SDKs of the provider adapters. Kept from the pi setup, where pi
+  # pinned them exactly; the TanStack AI adapters pin only some of them.
   - '@anthropic-ai/sdk'
   - '@google/genai'
   - '@mistralai/mistralai'
@@ -39,3 +44,23 @@ minimumReleaseAgeExclude:
   - protobufjs
   - react
   - react-dom
+# One copy of each TanStack AI preview package, from the same pkg.pr.new
+# commit. Their peer ranges point at npm, so these overrides keep every
+# workspace package on the preview build.
+overrides:
+  '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-event-client': https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-harness': https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-persistence': https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-models': https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-compaction': https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-mcp': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-anthropic': https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-openai': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-gemini': https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-bedrock': https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-mistral': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-openrouter': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openrouter@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-cloudflare': https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@7b549412f74dd3dff68039bb66b2a138ae6025b8

@@ -1,4 +1,3 @@
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai';
 import { expect, it } from 'vitest';
 import type { PersistenceAdapter } from './agent-execution-store.ts';
 import type { ConversationRecord } from './conversation-records.ts';
@@ -12,6 +11,7 @@ import {
 } from './index.ts';
 import { local, sqlite, start } from './node/index.ts';
 import type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from './test-utils/faux.ts';
 
 function recordingDatabase() {
 	const database = sqlite();
@@ -50,7 +50,10 @@ function waitForAbort(signal: AbortSignal | undefined): Promise<never> {
 	if (!signal) throw new Error('Expected the tool to receive an abort signal.');
 	return new Promise((_resolve, reject) => {
 		if (signal.aborted) reject(signal.reason);
-		else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+		else
+			signal.addEventListener('abort', () => reject(signal.reason), {
+				once: true,
+			});
 	});
 }
 
@@ -84,7 +87,10 @@ it('repairs an aborted partial sequential tool batch before recording the failur
 					parameters: { type: 'object', properties: {} },
 					async execute() {
 						calls.second += 1;
-						return { details: {}, content: [{ type: 'text' as const, text: 'second result' }] };
+						return {
+							details: {},
+							content: [{ type: 'text' as const, text: 'second result' }],
+						};
 					},
 				},
 			],

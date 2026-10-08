@@ -5,10 +5,13 @@
  *
  * Kept in their own module to share between `session.ts` (per-call
  * aggregation across the active path) and `session.ts`'s compaction
- * persistence path (normalizing pi-ai's `Usage` into our `PromptUsage`
+ * persistence path (normalizing provider usage into our `PromptUsage`
  * before storing on a canonical compaction record).
  */
-import type { Usage } from '@earendil-works/pi-ai';
+import type { TokenUsage } from '@tanstack/ai';
+import type { ModelCostRates } from '@tanstack/ai-models';
+import type { Usage } from './llm-types.ts';
+import { toFlueUsage } from './model-messages.ts';
 import type { PromptUsage } from './types.ts';
 
 /** All-zero `PromptUsage`. Identity element for `addUsage`. */
@@ -45,14 +48,17 @@ export function addUsage(a: PromptUsage, b: PromptUsage): PromptUsage {
 }
 
 /**
- * Convert pi-ai's `Usage` into Flue's public `PromptUsage`. The shapes are
- * structurally identical today, but going through this normalizer keeps
- * Flue's public types decoupled from pi-ai's so future divergence in
- * pi-ai (e.g. additional fields) doesn't leak into the runtime package's public
- * surface. Returns `undefined` when the input is `undefined`.
+ * Convert a message's `Usage`, or TanStack's `TokenUsage` priced with `cost`,
+ * into Flue's public `PromptUsage`. Going through this normalizer keeps the
+ * public type apart from the message type. Returns `undefined` when the input
+ * is `undefined`.
  */
-export function fromProviderUsage(usage: Usage | undefined): PromptUsage | undefined {
-	if (!usage) return undefined;
+export function fromProviderUsage(
+	providerUsage: Usage | TokenUsage | undefined,
+	cost?: ModelCostRates,
+): PromptUsage | undefined {
+	if (!providerUsage) return undefined;
+	const usage = 'promptTokens' in providerUsage ? toFlueUsage(providerUsage, cost) : providerUsage;
 	return {
 		input: usage.input,
 		output: usage.output,

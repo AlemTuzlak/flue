@@ -1,7 +1,7 @@
-import { fauxAssistantMessage, fauxProvider, fauxText } from '@earendil-works/pi-ai';
 import { expect, it } from 'vitest';
 import { init, instrument, useModel } from './index.ts';
 import { sqlite, start } from './node/index.ts';
+import { fauxAssistantMessage, fauxProvider, fauxText } from './test-utils/faux.ts';
 import type { FlueObservation } from './types.ts';
 
 it('includes final text in persisted submission operation telemetry', async () => {
@@ -12,7 +12,9 @@ it('includes final text in persisted submission operation telemetry', async () =
 
 	const faux = fauxProvider({ models: [{ id: 'model' }] });
 	faux.setResponses([
-		fauxAssistantMessage([fauxText('Persisted response.')], { stopReason: 'stop' }),
+		fauxAssistantMessage([fauxText('Persisted response.')], {
+			stopReason: 'stop',
+		}),
 	]);
 	const observations: FlueObservation[] = [];
 	const disposeInstrumentation = instrument({

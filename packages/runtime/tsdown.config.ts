@@ -16,6 +16,10 @@ export default defineConfig({
 		'src/test-utils/define-store-contract-tests.ts',
 		'src/test-utils/define-attachment-store-contract-tests.ts',
 		'src/test-utils/define-conversation-stream-store-contract-tests.ts',
+		'src/test-utils/faux.ts',
+		// One entry per provider module, so a build imports only the catalogs it names.
+		'src/providers/*.ts',
+		'!src/providers/*.test.ts',
 	],
 	format: ['esm'],
 	dts: true,

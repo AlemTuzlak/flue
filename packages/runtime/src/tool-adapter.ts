@@ -1,8 +1,12 @@
+import type { ImageContent, TextContent } from './llm-types.ts';
 import type { ToolDefinition } from './tool-types.ts';
 
 type PreparedToolAdapter = {
 	readonly parameters: object;
-	execute(args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
+	execute(
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<(TextContent | ImageContent)[]>;
 };
 
 const preparedToolAdapter = Symbol('flue.preparedToolAdapter');

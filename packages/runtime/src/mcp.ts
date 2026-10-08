@@ -1,13 +1,13 @@
 import {
 	type AuthProvider,
-	type CallToolResult,
-	Client,
 	SSEClientTransport,
 	StreamableHTTPClientTransport,
-	type Tool,
 	type Transport,
 } from '@modelcontextprotocol/client';
+import type { ContentPart } from '@tanstack/ai';
+import { createMCPClient, type McpServerTool } from '@tanstack/ai-mcp';
 import { version as runtimeVersion } from '../package.json' with { type: 'json' };
+import type { ImageContent, TextContent } from './llm-types.ts';
 import type { McpAuth, McpConnectionDefinition, McpTransport } from './mcp-types.ts';
 import { registerPreparedToolAdapter } from './tool-adapter.ts';
 import type { ToolDefinition } from './types.ts';
@@ -18,12 +18,6 @@ export type {
 	McpToolAnnotations,
 	McpTransport,
 } from './mcp-types.ts';
-
-/** Request options in the MCP SDK's shape (its `timeout` is milliseconds). */
-type McpRequestOptions = {
-	timeout?: number;
-	resetTimeoutOnProgress?: boolean;
-};
 
 /** Connection returned by {@link createMcpConnection}. */
 export interface McpConnection {
@@ -82,8 +76,6 @@ export function createMcpConnectionCache(): McpConnectionCache {
 	};
 }
 
-type McpClient = Pick<Client, 'callTool' | 'close' | 'connect' | 'listTools'>;
-
 /**
  * Connects to a remote MCP server described by a
  * {@link McpConnectionDefinition} and adapts its listed tools into ordinary
@@ -97,62 +89,46 @@ export async function createMcpConnection(
 	definition: McpConnectionDefinition,
 ): Promise<McpConnection> {
 	const url = definition.url instanceof URL ? definition.url : new URL(definition.url);
-	const requestInit = mergeRequestInit(definition.requestInit, definition.headers);
 	const transport = createTransport(
 		url,
 		definition.transport ?? 'streamable-http',
-		requestInit,
+		mergeRequestInit(definition.requestInit, definition.headers),
 		definition.fetch,
 		definition.auth === undefined ? undefined : createAuthProvider(definition.auth),
 	);
-	const client = new Client({
-		name: 'flue',
-		version: runtimeVersion,
+	return createMcpConnectionFromTransport(definition.name, transport, {
+		timeoutMs: definition.timeoutMs,
+		resetTimeoutOnProgress: definition.resetTimeoutOnProgress,
+		tools: definition.tools,
 	});
-
-	return createMcpConnectionWithClient(
-		definition.name,
-		client,
-		transport,
-		{
-			timeout: definition.timeoutMs,
-			resetTimeoutOnProgress: definition.resetTimeoutOnProgress,
-		},
-		{ tools: definition.tools },
-	);
 }
 
-export async function createMcpConnectionWithClient(
+/**
+ * Connects an MCP client over `transport` and adapts the server's tools.
+ * `tools` is a strict allowlist: a name the server does not expose fails the
+ * connection.
+ */
+export async function createMcpConnectionFromTransport(
 	name: string,
-	client: McpClient,
 	transport: Transport,
-	requestOptions: McpRequestOptions = {},
-	selection: { tools?: readonly string[] } = {},
+	options: Pick<McpConnectionDefinition, 'timeoutMs' | 'resetTimeoutOnProgress' | 'tools'> = {},
 ): Promise<McpConnection> {
+	const client = await createMCPClient({
+		transport,
+		name: 'flue',
+		version: runtimeVersion,
+		toolName: (tool) => createToolName(name, tool.name),
+		requestOptions: {
+			timeout: options.timeoutMs,
+			resetTimeoutOnProgress: options.resetTimeoutOnProgress,
+		},
+		...(options.tools === undefined ? {} : { toolFilter: options.tools }),
+	});
 	try {
-		await client.connect(transport);
-		let page = await client.listTools(undefined, requestOptions);
-		const tools = [...page.tools];
-		const seenCursors = new Set<string>();
-		while (page.nextCursor !== undefined) {
-			if (seenCursors.has(page.nextCursor)) {
-				throw new Error(
-					`[flue] MCP server "${name}" repeated tools/list cursor ${JSON.stringify(page.nextCursor)} during tool discovery.`,
-				);
-			}
-			seenCursors.add(page.nextCursor);
-			page = await client.listTools({ cursor: page.nextCursor }, requestOptions);
-			tools.push(...page.tools);
-		}
-
+		const tools = await client.tools();
 		return {
 			name,
-			tools: createMcpTools(
-				name,
-				client,
-				selectMcpTools(name, tools, selection.tools),
-				requestOptions,
-			),
+			tools: tools.map((tool) => toFlueTool(tool)),
 			close: () => client.close(),
 		};
 	} catch (error) {
@@ -173,47 +149,6 @@ function createAuthProvider(auth: McpAuth): AuthProvider {
 		token: async () => resolveToken(),
 		onUnauthorized: async () => {},
 	};
-}
-
-/**
- * Apply the `tools` allowlist to the discovered listing, in allowlist order.
- * Every allowlisted name must exist and be callable — a typo or an
- * unsupported tool must fail loud, not silently narrow the tool set.
- */
-function selectMcpTools(
-	serverName: string,
-	discovered: Tool[],
-	allowlist: readonly string[] | undefined,
-): Tool[] {
-	if (allowlist === undefined) return discovered;
-	const byName = new Map(discovered.map((tool) => [tool.name, tool]));
-	const duplicates = allowlist.filter((name, index) => allowlist.indexOf(name) !== index);
-	if (duplicates.length > 0) {
-		throw new Error(
-			`[flue] MCP server "${serverName}" tools allowlist repeats ${formatToolNames(duplicates)}.`,
-		);
-	}
-	const unknown = allowlist.filter((name) => !byName.has(name));
-	if (unknown.length > 0) {
-		throw new Error(
-			`[flue] MCP server "${serverName}" does not expose ${formatToolNames(unknown)} named in the tools allowlist. Discovered tools: ${
-				discovered.map((tool) => tool.name).join(', ') || '(none)'
-			}.`,
-		);
-	}
-	return allowlist.map((name) => {
-		const tool = byName.get(name) as Tool;
-		if (tool.execution?.taskSupport === 'required') {
-			throw new Error(
-				`[flue] MCP tool "${name}" from server "${serverName}" requires task-based execution, which is not supported — remove it from the tools allowlist.`,
-			);
-		}
-		return tool;
-	});
-}
-
-function formatToolNames(names: readonly string[]): string {
-	return [...new Set(names)].map((name) => JSON.stringify(name)).join(', ');
 }
 
 function createTransport(
@@ -237,72 +172,6 @@ function createTransport(
 	});
 }
 
-function createMcpTools(
-	serverName: string,
-	client: McpClient,
-	tools: Tool[],
-	requestOptions: McpRequestOptions,
-): ToolDefinition[] {
-	const names = new Set<string>();
-
-	const callableTools = tools.filter((tool) => {
-		if (tool.execution?.taskSupport !== 'required') return true;
-		console.warn(
-			`[flue] Skipping MCP tool "${tool.name}" from server "${serverName}": it requires task-based execution, which is not supported.`,
-		);
-		return false;
-	});
-
-	return callableTools.map((tool) => {
-		const toolName = createToolName(serverName, tool.name);
-		if (names.has(toolName)) {
-			throw new Error(
-				`[flue] MCP tools from server "${serverName}" produced duplicate tool name "${toolName}".`,
-			);
-		}
-		names.add(toolName);
-
-		const definition: ToolDefinition = {
-			name: toolName,
-			description: createToolDescription(serverName, tool),
-			input: undefined,
-			output: undefined,
-			// Carry the server's `tools/list` annotations through so application
-			// code can gate on readOnlyHint / destructiveHint / idempotentHint /
-			// openWorldHint. The copy is frozen like the definition itself —
-			// adapted tools are data, not handles.
-			...(tool.annotations === undefined
-				? {}
-				: { annotations: Object.freeze({ ...tool.annotations }) }),
-			run() {
-				throw new Error('[flue] MCP tools execute through the internal adapter.');
-			},
-		};
-		registerPreparedToolAdapter(definition, {
-			parameters: normalizeInputSchema(tool.inputSchema),
-			async execute(args, signal) {
-				if (signal?.aborted) throw new Error('Operation aborted');
-				// The client validates structured output against the tool's
-				// declared output schema itself and surfaces a mismatch as an
-				// error — nothing to re-check here.
-				const result: CallToolResult = await client.callTool(
-					{
-						name: tool.name,
-						arguments: args,
-					},
-					{ ...requestOptions, signal },
-				);
-				const text = formatMcpResult(result);
-				if (result.isError) {
-					throw new Error(text);
-				}
-				return text;
-			},
-		});
-		return Object.freeze(definition);
-	});
-}
-
 function mergeRequestInit(
 	requestInit: RequestInit | undefined,
 	headers: HeadersInit | undefined,
@@ -318,77 +187,55 @@ function mergeRequestInit(
 	};
 }
 
-function createToolName(serverName: string, toolName: string): string {
+function toFlueTool(tool: McpServerTool): ToolDefinition {
+	const { annotations } = tool.metadata.mcp;
+	const definition: ToolDefinition = {
+		name: tool.name,
+		description: tool.description,
+		input: undefined,
+		output: undefined,
+		...(annotations === undefined ? {} : { annotations }),
+		run() {
+			throw new Error('[flue] MCP tools execute through the internal adapter.');
+		},
+	};
+	const execute = tool.execute;
+	if (!execute) throw new Error(`[flue] MCP tool "${tool.name}" has no execute function.`);
+	registerPreparedToolAdapter(definition, {
+		parameters: tool.inputSchema ?? { type: 'object', properties: {} },
+		async execute(args, signal) {
+			if (signal?.aborted) throw new Error('Operation aborted');
+			// ponytail: Flue has no custom-event stream for MCP calls; the MCP execute reads only the signal.
+			return toToolContent(await execute(args, { abortSignal: signal, emitCustomEvent() {} }));
+		},
+	});
+	return Object.freeze(definition);
+}
+
+function createToolName(serverName: string, toolName: string) {
 	return `mcp__${sanitizeToolNamePart(serverName)}__${sanitizeToolNamePart(toolName)}`;
 }
 
-function sanitizeToolNamePart(value: string): string {
+function sanitizeToolNamePart(value: string) {
 	const sanitized = value.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
 	return sanitized || 'unnamed';
 }
 
-function createToolDescription(serverName: string, tool: Tool): string {
-	const parts: string[] = [];
-	// The adapted name parses back to the original ("mcp__linear__create_issue")
-	// unless sanitization altered a part — only then does the mapping need
-	// spelling out, so server descriptions that cross-reference sibling tools
-	// by their original names stay followable.
-	const sanitized =
-		sanitizeToolNamePart(serverName) !== serverName ||
-		sanitizeToolNamePart(tool.name) !== tool.name;
-	if (sanitized) parts.push(`MCP tool "${tool.name}" from server "${serverName}".`);
-	const title = tool.title ?? tool.annotations?.title;
-	if (title && title !== tool.name) parts.push(`Title: ${title}.`);
-	if (tool.description) parts.push(tool.description);
-	if (parts.length === 0) parts.push(`MCP tool "${tool.name}" from server "${serverName}".`);
-	return parts.join(' ');
+/** TanStack's MCP result (text, content parts, or structured content) as Flue tool content. */
+function toToolContent(result: unknown): (TextContent | ImageContent)[] {
+	if (typeof result === 'string') return [{ type: 'text', text: result }];
+	if (Array.isArray(result)) return result.map((part: ContentPart) => toContentBlock(part));
+	return [{ type: 'text', text: JSON.stringify(result, null, 2) }];
 }
 
-function normalizeInputSchema(schema: Tool['inputSchema']): object {
-	return {
-		...schema,
-		type: schema.type ?? 'object',
-		properties: schema.properties ?? {},
-		required: schema.required,
-	};
-}
-
-function formatMcpResult(result: CallToolResult): string {
-	const parts: string[] = [];
-
-	if (result.structuredContent !== undefined) {
-		parts.push(`Structured content:\n${JSON.stringify(result.structuredContent, null, 2)}`);
+function toContentBlock(part: ContentPart): TextContent | ImageContent {
+	if (part.type === 'text') return { type: 'text', text: part.content };
+	if (part.type === 'image' && part.source.type === 'data') {
+		return {
+			type: 'image',
+			data: part.source.value,
+			mimeType: part.source.mimeType,
+		};
 	}
-
-	for (const item of result.content ?? []) {
-		if (item.type === 'text') {
-			parts.push(item.text);
-			continue;
-		}
-		if (item.type === 'image') {
-			parts.push(`[Image: ${item.mimeType}, ${item.data.length} base64 chars]`);
-			continue;
-		}
-		if (item.type === 'audio') {
-			parts.push(`[Audio: ${item.mimeType}, ${item.data.length} base64 chars]`);
-			continue;
-		}
-		if (item.type === 'resource') {
-			const resource = item.resource;
-			if ('text' in resource) {
-				parts.push(`[Resource: ${resource.uri}]\n${resource.text}`);
-			} else {
-				parts.push(`[Resource: ${resource.uri}, ${resource.blob.length} base64 chars]`);
-			}
-			continue;
-		}
-		if (item.type === 'resource_link') {
-			const description = item.description ? ` - ${item.description}` : '';
-			parts.push(`[Resource link: ${item.name} (${item.uri})${description}]`);
-			continue;
-		}
-		parts.push(JSON.stringify(item));
-	}
-
-	return parts.filter(Boolean).join('\n\n') || '(MCP tool returned no content)';
+	return { type: 'text', text: JSON.stringify(part) };
 }

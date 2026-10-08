@@ -45,7 +45,7 @@ import { stackless } from './diagnostics.ts';
 
 const MIN_COMPATIBILITY_DATE = '2026-04-01';
 
-/** compatibility_flag Flue requires for pi-ai's process.env-based API key lookup. */
+/** compatibility_flag Flue requires: the built-in providers read API keys from `process.env`. */
 const REQUIRED_COMPAT_FLAG = 'nodejs_compat';
 
 /** The virtual Worker entry `main` points at (served by the flue() plugin). */

@@ -1,8 +1,14 @@
-import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
-import { type Static, Type } from '@earendil-works/pi-ai';
+import * as v from 'valibot';
 import { composeTimeoutSignal } from './abort.ts';
 import { decodeBase64 } from './base64.ts';
+import type { AgentTool, AgentToolResult } from './llm-types.ts';
+import { valibotToJsonSchema } from './schema.ts';
 import type { PackagedSkillDirectory, Sandbox } from './types.ts';
+
+/** `schema`, with the description the model sees. */
+function described<TSchema extends v.GenericSchema>(schema: TSchema, description: string) {
+	return v.pipe(schema, v.description(description));
+}
 
 const MAX_READ_LINES = 2000;
 const MAX_READ_BYTES = 50 * 1024;
@@ -68,21 +74,25 @@ export function overlayPackagedSkills(
 	};
 }
 
-const ReadParams = Type.Object({
-	path: Type.String({ description: 'Path to the file to read' }),
-	offset: Type.Optional(Type.Number({ description: 'Line number to start from (1-indexed)' })),
-	limit: Type.Optional(Type.Number({ description: 'Maximum number of lines to read' })),
+const ReadParams = v.object({
+	path: described(v.string(), 'Path to the file to read'),
+	offset: v.optional(described(v.number(), 'Line number to start from (1-indexed)')),
+	limit: v.optional(described(v.number(), 'Maximum number of lines to read')),
 });
 
 export function createPackagedSkillReadTool(
 	packagedSkills: Record<string, PackagedSkillDirectory>,
-): AgentTool<typeof ReadParams> {
+): AgentTool<v.InferOutput<typeof ReadParams>> {
 	return {
 		name: READ_SKILL_RESOURCE_TOOL_NAME,
 		label: 'Read Skill Resource',
 		description: 'Read a packaged skill supporting file by its advertised path.',
-		parameters: ReadParams,
-		async execute(_toolCallId: string, params: Static<typeof ReadParams>, signal?: AbortSignal) {
+		parameters: valibotToJsonSchema(ReadParams),
+		async execute(
+			_toolCallId: string,
+			params: v.InferOutput<typeof ReadParams>,
+			signal?: AbortSignal,
+		) {
 			throwIfAborted(signal);
 			const content = readPackagedSkillFile(packagedSkills, params.path);
 			if (content === undefined)
@@ -97,14 +107,18 @@ export function createPackagedSkillReadTool(
  * the file verbs. Use it (with the other `create*Tool` factories) to compose
  * a {@link SandboxFactory}'s `tools` list instead of rebuilding from scratch.
  */
-export function createReadTool(env: Sandbox): AgentTool<typeof ReadParams> {
+export function createReadTool(env: Sandbox): AgentTool<v.InferOutput<typeof ReadParams>> {
 	return {
 		name: 'read',
 		label: 'Read File',
 		description:
 			'Read a file. Output is truncated to 2000 lines or 50KB — use offset/limit for large files.',
-		parameters: ReadParams,
-		async execute(_toolCallId: string, params: Static<typeof ReadParams>, signal?: AbortSignal) {
+		parameters: valibotToJsonSchema(ReadParams),
+		async execute(
+			_toolCallId: string,
+			params: v.InferOutput<typeof ReadParams>,
+			signal?: AbortSignal,
+		) {
 			throwIfAborted(signal);
 			const content = await env.readFile(params.path);
 			return formatReadContent(params.path, content, params.offset, params.limit);
@@ -164,23 +178,27 @@ function withFileMutationLock<T>(
 	return run;
 }
 
-const WriteParams = Type.Object({
-	path: Type.String({ description: 'Path to the file to write' }),
-	content: Type.String({ description: 'Content to write to the file' }),
+const WriteParams = v.object({
+	path: described(v.string(), 'Path to the file to write'),
+	content: described(v.string(), 'Content to write to the file'),
 });
 
 /**
  * The framework's standard `write` tool over a {@link Sandbox}. Needs only
  * the file verbs.
  */
-export function createWriteTool(env: Sandbox): AgentTool<typeof WriteParams> {
+export function createWriteTool(env: Sandbox): AgentTool<v.InferOutput<typeof WriteParams>> {
 	return {
 		name: 'write',
 		label: 'Write File',
 		description:
 			'Write content to a file. Creates the file and parent directories if they do not exist.',
-		parameters: WriteParams,
-		async execute(_toolCallId: string, params: Static<typeof WriteParams>, signal?: AbortSignal) {
+		parameters: valibotToJsonSchema(WriteParams),
+		async execute(
+			_toolCallId: string,
+			params: v.InferOutput<typeof WriteParams>,
+			signal?: AbortSignal,
+		) {
 			throwIfAborted(signal);
 			return withFileMutationLock(env, params.path, async () => {
 				// Re-check after the lock wait; never between write start and end.
@@ -202,25 +220,29 @@ export function createWriteTool(env: Sandbox): AgentTool<typeof WriteParams> {
 	};
 }
 
-const EditParams = Type.Object({
-	path: Type.String({ description: 'Path to the file to edit' }),
-	oldText: Type.String({ description: 'Exact text to find (must be unique)' }),
-	newText: Type.String({ description: 'Replacement text' }),
-	replaceAll: Type.Optional(Type.Boolean({ description: 'Replace all occurrences' })),
+const EditParams = v.object({
+	path: described(v.string(), 'Path to the file to edit'),
+	oldText: described(v.string(), 'Exact text to find (must be unique)'),
+	newText: described(v.string(), 'Replacement text'),
+	replaceAll: v.optional(described(v.boolean(), 'Replace all occurrences')),
 });
 
 /**
  * The framework's standard `edit` tool over a {@link Sandbox}. Needs only
  * the file verbs.
  */
-export function createEditTool(env: Sandbox): AgentTool<typeof EditParams> {
+export function createEditTool(env: Sandbox): AgentTool<v.InferOutput<typeof EditParams>> {
 	return {
 		name: 'edit',
 		label: 'Edit File',
 		description:
 			'Edit a file using exact text replacement. The oldText must match a unique region of the file. Use replaceAll to replace all occurrences.',
-		parameters: EditParams,
-		async execute(_toolCallId: string, params: Static<typeof EditParams>, signal?: AbortSignal) {
+		parameters: valibotToJsonSchema(EditParams),
+		async execute(
+			_toolCallId: string,
+			params: v.InferOutput<typeof EditParams>,
+			signal?: AbortSignal,
+		) {
 			throwIfAborted(signal);
 			if (params.oldText === '') {
 				throw new Error('oldText must be a non-empty string.');
@@ -242,7 +264,12 @@ export function createEditTool(env: Sandbox): AgentTool<typeof EditParams> {
 					await env.writeFile(params.path, newContent);
 					const count = content.split(params.oldText).length - 1;
 					return {
-						content: [{ type: 'text', text: `Replaced ${count} occurrences in ${params.path}` }],
+						content: [
+							{
+								type: 'text',
+								text: `Replaced ${count} occurrences in ${params.path}`,
+							},
+						],
 						details: { path: params.path, replacements: count },
 					};
 				}
@@ -270,9 +297,9 @@ export function createEditTool(env: Sandbox): AgentTool<typeof EditParams> {
 	};
 }
 
-const BashParams = Type.Object({
-	command: Type.String({ description: 'Bash command to execute' }),
-	timeout: Type.Optional(Type.Number({ description: 'Timeout in seconds' })),
+const BashParams = v.object({
+	command: described(v.string(), 'Bash command to execute'),
+	timeout: v.optional(described(v.number(), 'Timeout in seconds')),
 });
 
 /**
@@ -280,14 +307,18 @@ const BashParams = Type.Object({
  * working `env.exec` — leave it out of a `tools` list for sandboxes that
  * don't execute shell commands.
  */
-export function createBashTool(env: Sandbox): AgentTool<typeof BashParams> {
+export function createBashTool(env: Sandbox): AgentTool<v.InferOutput<typeof BashParams>> {
 	return {
 		name: 'bash',
 		label: 'Run Command',
 		description:
 			'Execute a bash command. Returns stdout and stderr. Output is truncated to the last 2000 lines or 50KB.',
-		parameters: BashParams,
-		async execute(_toolCallId: string, params: Static<typeof BashParams>, signal?: AbortSignal) {
+		parameters: valibotToJsonSchema(BashParams),
+		async execute(
+			_toolCallId: string,
+			params: v.InferOutput<typeof BashParams>,
+			signal?: AbortSignal,
+		) {
 			throwIfAborted(signal);
 
 			// Two layers cooperate to enforce `params.timeout` (the
@@ -346,36 +377,37 @@ export function createBashTool(env: Sandbox): AgentTool<typeof BashParams> {
 	};
 }
 
-const TaskParams = Type.Object({
-	description: Type.Optional(
-		Type.String({ description: 'Short human-readable label for the delegated work' }),
+const TaskParams = v.object({
+	description: v.optional(
+		described(v.string(), 'Short human-readable label for the delegated work'),
 	),
-	prompt: Type.String({ description: 'Focused instructions for the child agent' }),
+	prompt: described(v.string(), 'Focused instructions for the child agent'),
 	// Required in the schema, but a plain string rather than an enum: the
 	// live roster can outgrow the frozen baseline (a dynamically declared
 	// subagent is delegable the same turn its `resources` signal announced
 	// it), and an enum would rewrite the tool spec on every roster flip.
-	agent: Type.String({
-		minLength: 1,
-		description:
+	agent: v.pipe(
+		v.string(),
+		v.minLength(1),
+		v.description(
 			'Subagent to run the task with, from the list of currently available agents. ' +
-			'Agents that have been removed from the list are no longer usable (until re-introduced, if ever).',
-	}),
-	cwd: Type.Optional(
-		Type.String({
-			description:
-				'Working directory for the child agent. AGENTS.md and skills are discovered from here.',
-		}),
+				'Agents that have been removed from the list are no longer usable (until re-introduced, if ever).',
+		),
 	),
-	attachments: Type.Optional(
-		Type.Array(
-			Type.Object({
-				id: Type.String({ description: 'Attachment ID shown in the current conversation' }),
-			}),
-			{
-				description:
-					'Images or documents from this conversation to include in the child agent prompt',
-			},
+	cwd: v.optional(
+		described(
+			v.string(),
+			'Working directory for the child agent. AGENTS.md and skills are discovered from here.',
+		),
+	),
+	attachments: v.optional(
+		described(
+			v.array(
+				v.object({
+					id: described(v.string(), 'Attachment ID shown in the current conversation'),
+				}),
+			),
+			'Images or documents from this conversation to include in the child agent prompt',
 		),
 	),
 });
@@ -398,7 +430,7 @@ export function createTaskTool(
 		signal?: AbortSignal,
 		toolCallId?: string,
 	) => Promise<AgentToolResult<TaskToolResultDetails | TaskToolUndeclaredAgentDetails>>,
-): AgentTool<typeof TaskParams> {
+): AgentTool<v.InferOutput<typeof TaskParams>> {
 	return {
 		name: 'task',
 		label: 'Run Task',
@@ -408,8 +440,12 @@ export function createTaskTool(
 			'Pass attachment IDs shown in the conversation to include those images. ' +
 			'The task returns only its final answer to this conversation. ' +
 			'Agents available for delegation are listed under "Available Agents" in the system prompt.',
-		parameters: TaskParams,
-		async execute(toolCallId: string, params: Static<typeof TaskParams>, signal?: AbortSignal) {
+		parameters: valibotToJsonSchema(TaskParams),
+		async execute(
+			toolCallId: string,
+			params: v.InferOutput<typeof TaskParams>,
+			signal?: AbortSignal,
+		) {
 			throwIfAborted(signal);
 			return runTask(params, signal, toolCallId);
 		},
@@ -425,8 +461,8 @@ export function createTaskTool(
 export function createActivateSkillTool(
 	activate: (name: string, signal?: AbortSignal) => Promise<string>,
 ): AgentTool<any> {
-	const ActivateSkillParams = Type.Object({
-		name: Type.String({ description: 'Name of the skill to activate' }),
+	const ActivateSkillParams = v.object({
+		name: described(v.string(), 'Name of the skill to activate'),
 	});
 
 	return {
@@ -434,7 +470,7 @@ export function createActivateSkillTool(
 		label: 'Activate Skill',
 		description:
 			'Load the full instructions for one available skill before performing work that matches its description. Supporting resources remain lazy until explicitly read.',
-		parameters: ActivateSkillParams,
+		parameters: valibotToJsonSchema(ActivateSkillParams),
 		async execute(_toolCallId: string, params: unknown, signal?: AbortSignal) {
 			throwIfAborted(signal);
 			const name =
@@ -474,11 +510,11 @@ export function formatBashResult(
 	};
 }
 
-const GrepParams = Type.Object({
-	pattern: Type.String({ description: 'Search pattern (regex)' }),
-	path: Type.Optional(Type.String({ description: 'Directory or file to search (default: .)' })),
-	include: Type.Optional(Type.String({ description: 'Glob filter, e.g. "*.ts"' })),
-	literal: Type.Optional(Type.Boolean({ description: 'Match the pattern as literal text' })),
+const GrepParams = v.object({
+	pattern: described(v.string(), 'Search pattern (regex)'),
+	path: v.optional(described(v.string(), 'Directory or file to search (default: .)')),
+	include: v.optional(described(v.string(), 'Glob filter, e.g. "*.ts"')),
+	literal: v.optional(described(v.boolean(), 'Match the pattern as literal text')),
 });
 
 // Keyed on env.exec rather than the env object: the session hands tool
@@ -517,14 +553,18 @@ function resolveGrepBackend(env: Sandbox): Promise<'rg' | 'grep'> {
  * The framework's standard `grep` tool over a {@link Sandbox}. Requires a
  * working `env.exec` (searches via `rg` or `grep` in the sandbox).
  */
-export function createGrepTool(env: Sandbox): AgentTool<typeof GrepParams> {
+export function createGrepTool(env: Sandbox): AgentTool<v.InferOutput<typeof GrepParams>> {
 	return {
 		name: 'grep',
 		label: 'Search Files',
 		description:
 			'Search file contents for a regex pattern. Returns matching lines with file paths and line numbers.',
-		parameters: GrepParams,
-		async execute(_toolCallId: string, params: Static<typeof GrepParams>, signal?: AbortSignal) {
+		parameters: valibotToJsonSchema(GrepParams),
+		async execute(
+			_toolCallId: string,
+			params: v.InferOutput<typeof GrepParams>,
+			signal?: AbortSignal,
+		) {
 			throwIfAborted(signal);
 
 			const searchPath = params.path || '.';
@@ -573,23 +613,27 @@ export function createGrepTool(env: Sandbox): AgentTool<typeof GrepParams> {
 	};
 }
 
-const GlobParams = Type.Object({
-	pattern: Type.String({ description: 'Filename pattern, e.g. "*.ts"' }),
-	path: Type.Optional(Type.String({ description: 'Directory to search in (default: .)' })),
+const GlobParams = v.object({
+	pattern: described(v.string(), 'Filename pattern, e.g. "*.ts"'),
+	path: v.optional(described(v.string(), 'Directory to search in (default: .)')),
 });
 
 /**
  * The framework's standard `glob` tool over a {@link Sandbox}. Requires a
  * working `env.exec` (finds files via `find` in the sandbox).
  */
-export function createGlobTool(env: Sandbox): AgentTool<typeof GlobParams> {
+export function createGlobTool(env: Sandbox): AgentTool<v.InferOutput<typeof GlobParams>> {
 	return {
 		name: 'glob',
 		label: 'Find Files',
 		description:
 			'Find files by filename pattern using shell find -name semantics. Returns matching file paths.',
-		parameters: GlobParams,
-		async execute(_toolCallId: string, params: Static<typeof GlobParams>, signal?: AbortSignal) {
+		parameters: valibotToJsonSchema(GlobParams),
+		async execute(
+			_toolCallId: string,
+			params: v.InferOutput<typeof GlobParams>,
+			signal?: AbortSignal,
+		) {
 			throwIfAborted(signal);
 
 			const searchPath = params.path || '.';

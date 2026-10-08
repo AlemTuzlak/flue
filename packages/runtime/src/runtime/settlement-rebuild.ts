@@ -20,7 +20,11 @@
  */
 
 import type { AgentSubmissionStore } from '../agent-execution-store.ts';
-import type { ConversationRecord, SubmissionSettledRecord } from '../conversation-records.ts';
+import {
+	type ConversationRecord,
+	flueRecordsOf,
+	type SubmissionSettledRecord,
+} from '../conversation-records.ts';
 import type { ConversationStreamStore } from './conversation-stream-store.ts';
 import { agentStreamPath } from './stream-offsets.ts';
 
@@ -35,8 +39,8 @@ export async function rebuildSettledSubmissionRows(options: {
 		const path = agentStreamPath(submission.input.agent, submission.input.id);
 		let records: ConversationRecord[];
 		try {
-			records = (await conversationStreamStore.read(path)).batches.flatMap(
-				(batch) => batch.records,
+			records = (await conversationStreamStore.read(path)).batches.flatMap((batch) =>
+				flueRecordsOf(batch.records),
 			);
 		} catch {
 			// No stream (or unreadable) — nothing durable to derive from.

@@ -1,4 +1,4 @@
-import type { AssistantMessage, ToolResultMessage } from '@earendil-works/pi-ai';
+import type { AssistantMessage, ToolResultMessage } from './llm-types.ts';
 import type { ResourceSnapshot } from './resources.ts';
 import { generateEntryId, generateRecordId } from './runtime/ids.ts';
 import type { PromptUsage } from './types.ts';
@@ -336,7 +336,7 @@ export interface SubmissionSettledRecord extends ConversationRecordEnvelope {
  * append batch as their batch's `tool_results_committed` record, so a state
  * write shares the durability of the tool batch that made it.
  */
-export interface StateWriteRecord extends ConversationRecordEnvelope {
+interface StateWriteRecord extends ConversationRecordEnvelope {
 	type: 'state_write';
 	name: string;
 	value: unknown;
@@ -438,7 +438,53 @@ interface ResourceSnapshotRecord extends ConversationRecordEnvelope {
 	snapshot: ResourceSnapshot;
 }
 
+/** One record of the TanStack harness log: harness records and Flue host records. */
+export interface HarnessLogRecord {
+	type: string;
+	[key: string]: unknown;
+}
+
+/**
+ * The attempt that may write a Flue host record. The conversation writer puts
+ * it on each record it sends through the harness, next to `thread`. The log
+ * store takes it off and gives it to the stream store, which checks it as it
+ * checks the `submission` of a direct append.
+ */
+export interface HarnessRecordAuthorization {
+	submissionId: string;
+	attemptId: string;
+}
+
+/**
+ * The place of a Flue record in a {@link HarnessLogBatchRecord}. The Flue
+ * record itself is at the top level of the same stream batch, at `index`.
+ * Read back, the log record is that record with `thread` added.
+ */
+export type HarnessFlueRecordSlot = {
+	type: 'harness.flue_record';
+	index: number;
+	thread: string;
+};
+
+/**
+ * The harness part of one append of the TanStack harness log. The append is
+ * one Flue batch: its Flue records come first, at the top level, as plain
+ * conversation records, and this record comes last. Its `records` are every
+ * log record of the append, in log order, at positions `seq`, `seq + 1`, and
+ * so on. Each Flue record is a {@link HarnessFlueRecordSlot} there. It is a
+ * record of the whole log, not of one conversation: `conversationId`,
+ * `harness`, and `session` are empty, and conversation readers skip it.
+ *
+ * An append with only Flue records has no such record.
+ */
+export interface HarnessLogBatchRecord extends ConversationRecordEnvelope {
+	type: 'harness_log_batch';
+	seq: number;
+	records: HarnessLogRecord[];
+}
+
 export type ConversationRecord =
+	| HarnessLogBatchRecord
 	| ConversationCreatedRecord
 	| UserMessageRecord
 	| SignalRecord
@@ -463,6 +509,59 @@ export type ConversationRecord =
 	| MessageMetadataRecord
 	| ToolStepSettledRecord
 	| ResourceSnapshotRecord;
+
+/** Flue's own record types. The compiler checks that the list is complete. */
+const FLUE_RECORD_TYPES: Record<Exclude<ConversationRecord['type'], 'harness_log_batch'>, true> = {
+	conversation_created: true,
+	user_message: true,
+	signal: true,
+	assistant_message_started: true,
+	assistant_text_started: true,
+	assistant_text_delta: true,
+	assistant_text_completed: true,
+	assistant_reasoning_started: true,
+	assistant_reasoning_delta: true,
+	assistant_reasoning_completed: true,
+	assistant_tool_call: true,
+	assistant_message_completed: true,
+	tool_outcome: true,
+	tool_results_committed: true,
+	compaction: true,
+	child_session_retained: true,
+	submission_settled: true,
+	state_write: true,
+	agent_start_run: true,
+	agent_finish_cycle: true,
+	message_data_write: true,
+	message_metadata: true,
+	tool_step_settled: true,
+	resource_snapshot: true,
+};
+
+/**
+ * True for a Flue conversation record among the records of a harness log
+ * append. Other records are harness records or other host records.
+ */
+export function isFlueRecord(record: object): record is ConversationRecord {
+	return (
+		'v' in record &&
+		record.v === 1 &&
+		'id' in record &&
+		typeof record.id === 'string' &&
+		'type' in record &&
+		typeof record.type === 'string' &&
+		Object.hasOwn(FLUE_RECORD_TYPES, record.type)
+	);
+}
+
+/**
+ * The Flue records of a batch, in order. A harness log append keeps its Flue
+ * records at the top level, so this leaves out only its `harness_log_batch`
+ * record.
+ */
+export function flueRecordsOf(records: readonly ConversationRecord[]) {
+	return records.filter((record) => record.type !== 'harness_log_batch');
+}
 
 export function generateConversationRecordId(): string {
 	return generateRecordId();

@@ -35,7 +35,7 @@ Flue is…
 
 ### Harness-first
 
-**Flue agents are proper agents, in the same mold as Claude Code or OpenClaw.** Flue builds on [Pi](https://pi.dev/), the open agent harness behind OpenClaw, and integrates it deeply into every agent you build. Each agent gets the full harness — the tools, skills, instructions, and, when you attach one, the sandbox it needs to work autonomously toward a goal.
+**Flue agents are proper agents, in the same mold as Claude Code or OpenClaw.** Flue builds on the agent harness of [TanStack AI](https://tanstack.com/ai) and puts it into every agent you build. Each agent gets the full harness: the tools, skills, and instructions, plus the sandbox when you attach one. With them, it can work autonomously toward a goal.
 
 That is the difference between Flue and an SDK: the harness is the core of the framework, not a feature of it.
 
