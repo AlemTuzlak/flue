@@ -58,7 +58,9 @@ export function createInstanceHarnessHost(options: {
 		},
 	});
 	const leases = submissions
-		? createFlueLeaseStore(submissions, ownerId, { isLive })
+		? isLive
+			? createFlueLeaseStore(submissions, ownerId, { isLive })
+			: createOwnedLeaseStore(submissions, ownerId)
 		: createProcessLeaseStore();
 	return createHarnessHost({
 		persistence: defineAIPersistence({ stores: { log, leases } }),
@@ -77,6 +79,24 @@ export interface InstanceHarnessBinding {
 	host: InstanceHarnessHost;
 	/** The instance stream path. Every thread of the host opens with it as `logId`. */
 	logId: string;
+}
+
+/**
+ * The submission leases of `ownerId`, as `createFlueLeaseStore` maps them. A
+ * lease that `ownerId` holds is not alive for recovery: `isAlive` asks about
+ * another host, and this host does not run the cut attempt. That is the
+ * replacement attempt of a recovered submission, which renewed the lease
+ * before its session opened.
+ */
+function createOwnedLeaseStore(submissions: AgentSubmissionStore, ownerId: string) {
+	const leases = createFlueLeaseStore(submissions, ownerId);
+	return {
+		...leases,
+		isAlive: async (key) => {
+			const submission = await submissions.getSubmission(key.inputId);
+			return submission?.ownerId !== ownerId && (await leases.isAlive(key));
+		},
+	} satisfies LeaseStore;
 }
 
 /** Leases of this process: alive from `acquire` to `release`. */

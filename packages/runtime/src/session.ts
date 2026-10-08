@@ -3000,12 +3000,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					const toolDurationMs = durationSince(call.startedAt);
 					// On the durable path, a call that ran in the harness stages its
 					// outcome and the state writes so far: they land with the tool
-					// batch, or never.
+					// batch, or never. After an abort, the writes stay buffered: the
+					// batch commit takes them, or the abort repair drops them.
 					const harnessCall = this.harnessToolCalls.get(event.toolCallId);
 					this.harnessToolCalls.delete(event.toolCallId);
 					await this.conversationWriter.append(
 						[
-							...(harnessCall ? this.drainHookStateRecords() : []),
+							...(harnessCall && !signal.aborted ? this.drainHookStateRecords() : []),
 							{
 								...this.canonicalEnvelope('tool_outcome', `record_tool_outcome_${outcomeKey}`),
 								type: 'tool_outcome',
