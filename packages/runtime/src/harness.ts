@@ -11,6 +11,7 @@ import type { McpUnavailableConnection } from './mcp-types.ts';
 import type { AgentOutputChannel } from './message-output.ts';
 import type { AttachmentStore } from './runtime/attachment-store.ts';
 import { createConversationIdentity } from './runtime/ids.ts';
+import type { InstanceHarnessBinding } from './runtime/instance-harness-host.ts';
 import { createCwdSandbox } from './sandbox.ts';
 import {
 	type CreateTaskSessionOptions,
@@ -59,6 +60,12 @@ export interface HarnessOptions {
 	toolFactory?: SandboxToolFactory;
 	conversationWriter: ConversationRecordWriter;
 	attachmentStore: AttachmentStore;
+	/**
+	 * The durable host of the instance. With it, every session this harness
+	 * opens (named sessions, task children, action children) is a thread of
+	 * the host.
+	 */
+	harnessHost?: InstanceHarnessBinding;
 	executionContext?: FlueExecutionContext;
 	scopeName?: string;
 	scopeDepth?: number;
@@ -140,6 +147,7 @@ export class Harness implements FlueHarness {
 	private mcpUnavailable: McpUnavailableConnection[];
 	private conversationWriter: ConversationRecordWriter;
 	private attachmentStore: AttachmentStore;
+	private harnessHost: InstanceHarnessBinding | undefined;
 	private executionContext: FlueExecutionContext;
 	private scopeName: string | undefined;
 	private scopeDepth: number;
@@ -160,6 +168,7 @@ export class Harness implements FlueHarness {
 		this.mcpUnavailable = options.mcpUnavailable ?? [];
 		this.conversationWriter = options.conversationWriter;
 		this.attachmentStore = options.attachmentStore;
+		this.harnessHost = options.harnessHost;
 		this.executionContext = options.executionContext ?? {};
 		this.scopeName = options.scopeName;
 		this.scopeDepth = options.scopeDepth ?? 0;
@@ -310,6 +319,7 @@ export class Harness implements FlueHarness {
 			onClose: () => this.openSessions.delete(sessionName),
 			conversationWriter: this.conversationWriter,
 			attachmentStore: this.attachmentStore,
+			...(this.harnessHost ? { harnessHost: this.harnessHost } : {}),
 			executionContext: { ...this.executionContext, harness: harnessScope },
 			hookState: this.hookState,
 			rerender: this.rerender,
@@ -417,6 +427,7 @@ export class Harness implements FlueHarness {
 			scopeSignal: this.scopeAbortController.signal,
 			conversationWriter: this.conversationWriter,
 			attachmentStore: this.attachmentStore,
+			...(this.harnessHost ? { harnessHost: this.harnessHost } : {}),
 			executionContext: { ...this.executionContext, harness: harnessScope, taskId: options.taskId },
 		});
 		await session.initializeCanonicalContext();
@@ -477,6 +488,7 @@ export class Harness implements FlueHarness {
 			toolFactory: this.envSlot.toolFactory,
 			conversationWriter: this.conversationWriter,
 			attachmentStore: this.attachmentStore,
+			...(this.harnessHost ? { harnessHost: this.harnessHost } : {}),
 			executionContext: options.executionContext,
 			scopeName: nestedScope,
 			scopeDepth: options.depth,

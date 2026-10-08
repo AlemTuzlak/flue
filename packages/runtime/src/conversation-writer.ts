@@ -194,6 +194,11 @@ export class ConversationRecordWriter {
 		return this.target.kind === 'store' ? this.target.claim.offset : '-1';
 	}
 
+	/** True for a writer from {@link ConversationRecordWriter.overHarness}. */
+	get throughHarness() {
+		return this.target.kind === 'harness';
+	}
+
 	get failed(): boolean {
 		return this.lifecycle.status === 'failed';
 	}

@@ -7,6 +7,7 @@ import { modelContextCompactionFields } from './model-request-info.ts';
  * `FlueSession` contract.
  */
 
+import { defineHarness } from '@tanstack/ai-harness';
 import type * as v from 'valibot';
 import {
 	abandonToolOnAbort,
@@ -181,6 +182,10 @@ import {
 	generateTaskId,
 	generateTurnId,
 } from './runtime/ids.ts';
+import type {
+	InstanceHarnessBinding,
+	InstanceHarnessHost,
+} from './runtime/instance-harness-host.ts';
 import { providerTelemetryName } from './runtime/providers.ts';
 import { createCwdSandbox } from './sandbox.ts';
 import { valibotToJsonSchema } from './schema.ts';
@@ -200,6 +205,7 @@ import {
 	resolveToolRun,
 } from './tool.ts';
 import { getPreparedToolAdapter } from './tool-adapter.ts';
+import type { HarnessToolCall } from './tool-bridge.ts';
 import type {
 	AgentConfig,
 	CallHandle,
@@ -447,6 +453,12 @@ interface SessionInitOptions {
 	onClose?: () => void;
 	conversationWriter: ConversationRecordWriter;
 	attachmentStore: AttachmentStore;
+	/**
+	 * The durable host of the instance. With it, the agent loop runs as the
+	 * thread `conversationId` of the host, the harness transcript is the
+	 * model context, and `conversationWriter` writes over the host's log.
+	 */
+	harnessHost?: InstanceHarnessBinding;
 	executionContext?: FlueExecutionContext;
 	/**
 	 * `usePersistentState` write buffer from the harness's render (function agents
@@ -750,6 +762,14 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	private activeSubmissionAttemptId: string | undefined;
 	private conversationWriter: ConversationRecordWriter;
 	private attachmentStore: AttachmentStore;
+	private harnessHost: InstanceHarnessBinding | undefined;
+	/** The running calls of bridged tools on the durable path: their steps and staged records, by call id. */
+	private harnessToolCalls = new Map<string, HarnessToolCall>();
+	/**
+	 * A new submission input that the harness has not got yet, on the durable
+	 * path. The next turn of the input sends it (see `startInputTurn`).
+	 */
+	private pendingHarnessInput: { entryId: string; isSignal: boolean } | undefined;
 	private canonicalAssistant:
 		| {
 				messageId: string;
@@ -1391,7 +1411,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		// durable record (signals reach the model as rendered user-context
 		// messages — see buildConversationContext), so the live loop and a
 		// rehydrated context can never disagree about what the model saw.
-		this.agentLoop.steer(
+		this.steerSignal(
 			createUserContextMessage(
 				renderSignalMessage({
 					role: 'signal',
@@ -1818,7 +1838,87 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				'[flue] A joined delivery input entry is missing from the projected context.',
 			);
 		}
-		this.agentLoop.steer(entry.message);
+		const source = entry.sourceEntry;
+		if (source.type === 'message' && source.message.role === 'signal')
+			this.steerSignal(entry.message);
+		else this.agentLoop.steer(entry.message);
+	}
+
+	/**
+	 * Give the model a signal message. On the durable path, the host's
+	 * `project` fold puts the signal's record in the harness transcript, so
+	 * the message only joins Flue's own view of the transcript. Elsewhere it
+	 * is steered into the loop.
+	 */
+	private steerSignal(message: AgentMessage): void {
+		if (this.harnessHost) this.agentLoop.state.messages.push(message);
+		else this.agentLoop.steer(message);
+	}
+
+	/**
+	 * The turn that answers the input of the running submission. On the
+	 * durable path, the first turn of a new input sends it to the harness: a
+	 * user message as the real input, with the submission id as the input
+	 * id. A signal input is in the harness transcript already (the host's
+	 * `project` fold), so its turn continues from the transcript. Any other
+	 * turn continues as before.
+	 */
+	private async startInputTurn(): Promise<void> {
+		const input = this.pendingHarnessInput;
+		this.pendingHarnessInput = undefined;
+		if (!input) return this.agentLoop.continue();
+		const inputId = this.activeSubmissionId;
+		if (input.isSignal) return this.agentLoop.continueTurn(inputId ? { inputId } : {});
+		// Flue's view gets the input at the end, where the harness puts it.
+		const conversation = await this.requireConversation();
+		const resolved = await this.resolveCanonicalContextAttachments(conversation);
+		const entries = buildConversationContextEntries(conversation, {
+			resolveAttachment: (attachment) => {
+				const image = resolved.get(attachment.id);
+				if (!image) throw new AttachmentNotAvailableError({ attachmentId: attachment.id });
+				return image;
+			},
+		});
+		const index = entries.findIndex((entry) => entry.sourceEntry.id === input.entryId);
+		const entry = entries[index];
+		if (!entry)
+			throw new Error('[flue] The submission input is missing from the projected context.');
+		const lead = this.leadingSystemMessage();
+		const others = entries.filter((_, position) => position !== index).map((item) => item.message);
+		this.agentLoop.state.messages = lead ? [lead, ...others] : others;
+		return this.agentLoop.prompt([entry.message], undefined, inputId ? { inputId } : {});
+	}
+
+	/**
+	 * Before an agent loop run on the durable path: the host keeps one open
+	 * harness session per thread, so a Flue session that held this thread
+	 * before (an earlier attempt's session) lets go of it first.
+	 */
+	private async claimHarnessThread(): Promise<void> {
+		const binding = this.harnessHost;
+		if (!binding) return;
+		const owners = harnessThreadOwners.get(binding.host) ?? new Map<string, Session>();
+		harnessThreadOwners.set(binding.host, owners);
+		const owner = owners.get(this.conversationId);
+		if (owner === this) return;
+		if (owner) await owner.releaseHarnessThread();
+		owners.set(this.conversationId, this);
+	}
+
+	/** Close the harness session that this session's agent loop opened, if it holds one. */
+	private async releaseHarnessThread(): Promise<void> {
+		const binding = this.harnessHost;
+		if (!binding) return;
+		const owners = harnessThreadOwners.get(binding.host);
+		if (owners?.get(this.conversationId) !== this) return;
+		owners.delete(this.conversationId);
+		// `open` gives the live session of the thread: the one the agent loop
+		// opened under the harness name `flue/session`.
+		const session = await binding.host.open(defineHarness({ name: AGENT_LOOP_HARNESS_NAME }), {
+			threadId: this.conversationId,
+			logId: binding.logId,
+		});
+		await session.close();
 	}
 
 	/**
@@ -2270,6 +2370,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		this.onClose = options.onClose;
 		this.conversationWriter = options.conversationWriter;
 		this.attachmentStore = options.attachmentStore;
+		this.harnessHost = options.harnessHost;
 		this.executionIdentity = options.executionContext ?? {};
 		this.hookState = options.hookState;
 		this.rerender = options.rerender;
@@ -2307,6 +2408,18 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			sessionId: this.affinityKey,
 			createAdapter: this.createModelAdapterForCall,
 			onModelRequest: this.onModelCallRequest,
+			// The thread of this conversation on the instance host: the harness
+			// transcript is the model context.
+			...(options.harnessHost
+				? {
+						durable: {
+							host: options.harnessHost.host,
+							threadId: this.conversationId,
+							logId: options.harnessHost.logId,
+						},
+						onToolCall: (call: HarnessToolCall) => this.harnessToolCalls.set(call.toolCallId, call),
+					}
+				: {}),
 			// Render-per-turn (function agents): runs after the turn_end handler
 			// has committed the tool batch (state writes durable), so the next
 			// provider request gets fresh tool closures and a recomposed prompt.
@@ -2317,6 +2430,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		this.agentLoop.subscribe(async (event, signal) => {
 			switch (event.type) {
 				case 'agent_start':
+					// Before the run opens its harness session: one Flue session at a time holds the thread.
+					await this.claimHarnessThread();
 					this.emit({ type: 'agent_start' });
 					break;
 				case 'turn_start':
@@ -2630,24 +2745,36 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// Measure once and reuse for both the durable record and the
 					// ephemeral `tool` event so the two can never disagree.
 					const toolDurationMs = durationSince(call.startedAt);
-					await this.appendCanonical([
+					// On the durable path, a call that ran in the harness stages its
+					// outcome and the state writes so far: they land with the tool
+					// batch, or never.
+					const harnessCall = this.harnessToolCalls.get(event.toolCallId);
+					this.harnessToolCalls.delete(event.toolCallId);
+					await this.conversationWriter.append(
+						[
+							...(harnessCall ? this.drainHookStateRecords() : []),
+							{
+								...this.canonicalEnvelope('tool_outcome', `record_tool_outcome_${outcomeKey}`),
+								type: 'tool_outcome',
+								assistantMessageId,
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								isError: event.isError,
+								content: outcomeContent,
+								...(hasStructuredOutput ? { output: details?.output } : {}),
+								// Durable mirror of the engine's loop-ending flag, captured
+								// at the one seam every tool result passes through (built-in
+								// finish/give_up and custom tools alike), so recovery can
+								// reproduce the engine's batch-termination verdict.
+								...(result.terminate === true ? { terminate: true } : {}),
+								durationMs: toolDurationMs,
+							},
+						],
 						{
-							...this.canonicalEnvelope('tool_outcome', `record_tool_outcome_${outcomeKey}`),
-							type: 'tool_outcome',
-							assistantMessageId,
-							toolCallId: event.toolCallId,
-							toolName: event.toolName,
-							isError: event.isError,
-							content: outcomeContent,
-							...(hasStructuredOutput ? { output: details?.output } : {}),
-							// Durable mirror of the engine's loop-ending flag, captured
-							// at the one seam every tool result passes through (built-in
-							// finish/give_up and custom tools alike), so recovery can
-							// reproduce the engine's batch-termination verdict.
-							...(result.terminate === true ? { terminate: true } : {}),
-							durationMs: toolDurationMs,
+							...this.canonicalAppendOptions(),
+							...(harnessCall ? { stage: harnessCall.append } : {}),
 						},
-					]);
+					);
 					if (!call.startEmitted) {
 						this.emit(
 							{
@@ -2684,6 +2811,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				}
 				case 'turn_end': {
 					const turnId = this.activeTurnId ?? generateTurnId();
+					this.harnessToolCalls.clear();
 					if (await this.completeAbortedPartialToolBatch(event.toolResults, signal)) {
 						throw abortErrorFor(signal);
 					}
@@ -3845,9 +3973,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		if (this.closePromise) return this.closePromise;
 		this.closed = true;
 		this.abort();
-		this.closePromise = this.settle().finally(() => {
-			this.onClose?.();
-		});
+		this.closePromise = this.settle()
+			// A closed host already closed the thread, so a failed close changes nothing.
+			.then(() => this.releaseHarnessThread().catch(() => undefined))
+			.finally(() => {
+				this.onClose?.();
+			});
 		return this.closePromise;
 	}
 
@@ -4118,6 +4249,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				name: toolDef.name,
 				label: toolDef.name,
 				description: toolDef.description,
+				// A durable tool's finished steps replay, so a cut call can run again.
+				replay: !preparedToolAdapter && toolDef.durable ? 'safe' : 'never',
 				parameters: (preparedToolAdapter?.parameters ??
 					(toolDef.input
 						? valibotToJsonSchema(toolDef.input)
@@ -4154,7 +4287,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					toolCallId,
 					...(toolDef.durable
 						? {
-								step: this.createToolStep(toolDef.name, toolCallId, toolLogger),
+								// On the durable path, the harness keeps the steps of the call.
+								step:
+									this.harnessToolCalls.get(toolCallId)?.step ??
+									this.createToolStep(toolDef.name, toolCallId, toolLogger),
 							}
 						: {}),
 				});
@@ -5720,7 +5856,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				// errors — or transient-retry backoff) happens inside the turn loop,
 				// which evaluates the resume assistant before any continuation.
 				await this.runModelTurnWithRecovery({
-					start: () => this.agentLoop.continue(),
+					start: () => this.startInputTurn(),
 					signal: options.signal,
 					resume: {
 						assistant: state.assistant,
@@ -5737,7 +5873,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				// `tool_results`. Nothing was recorded and a replayed turn
 				// re-executes nothing, so let the model proceed.
 				await this.runModelTurnWithRecovery({
-					start: () => this.agentLoop.continue(),
+					start: () => this.startInputTurn(),
 					signal: options.signal,
 					resume: {
 						assistant: state.assistant,
@@ -5888,7 +6024,14 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						// would pre-empt it.
 						await this.settleTrailingToolBatch('any');
 						const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
-						await this.appendCanonical([await options.createCanonicalInput(parentId)]);
+						const inputRecord = await options.createCanonicalInput(parentId);
+						await this.appendCanonical([inputRecord]);
+						if (this.harnessHost) {
+							this.pendingHarnessInput = {
+								entryId: options.inputEntryId,
+								isSignal: inputRecord.type === 'signal',
+							};
+						}
 					}
 					await this.rebuildCanonicalContext();
 					await options.onInputApplied?.(durability);
@@ -5932,6 +6075,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// and clears the steering queue so nothing leaks into a re-attempt
 					// whose context is rebuilt from canonical records.
 					this.pendingSignalAppends = [];
+					this.pendingHarnessInput = undefined;
 					this.agentLoop.clearSteeringQueue();
 					// Detach the data-write queue tail too: its closures no-op once
 					// the attempt id clears below, and a rejected tail must not leak
@@ -6118,6 +6262,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		);
 	}
 }
+
+/** The harness name of the agent loop's thread (see `AgentLoop`). */
+const AGENT_LOOP_HARNESS_NAME = 'flue/session';
+
+/** The Flue session whose agent loop holds each thread of a host, by host and thread id. */
+const harnessThreadOwners = new WeakMap<InstanceHarnessHost, Map<string, Session>>();
 
 // ─── Public facade ──────────────────────────────────────────────────────────
 
