@@ -5,22 +5,22 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-event-client': https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-harness': https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-persistence': https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-models': https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-compaction': https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-mcp': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-anthropic': https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-openai': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-gemini': https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-bedrock': https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-mistral': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-openrouter': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openrouter@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-cloudflare': https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@57ea69fed347c8b461311fc56a00d08e6e0a1636
+  '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-event-client': https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-harness': https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-persistence': https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-models': https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-compaction': https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-mcp': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-anthropic': https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-openai': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-gemini': https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-bedrock': https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-mistral': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-openrouter': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openrouter@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-cloudflare': https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@7b549412f74dd3dff68039bb66b2a138ae6025b8
 
 importers:
 
@@ -104,8 +104,8 @@ importers:
         specifier: ^4.2.0
         version: 4.3.3(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))
       '@tanstack/ai-models':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8
       astro:
         specifier: 7.1.6
         version: 7.1.6(@astrojs/markdown-remark@7.2.2)(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(@types/node@26.1.2)(aws4fetch@1.0.20)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)
@@ -1612,41 +1612,41 @@ importers:
         specifier: 2.0.0
         version: 2.0.0
       '@tanstack/ai':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
       '@tanstack/ai-anthropic':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(zod@4.4.3)
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(zod@4.4.3)
       '@tanstack/ai-bedrock':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
       '@tanstack/ai-cloudflare':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
       '@tanstack/ai-compaction':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))
       '@tanstack/ai-gemini':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@57ea69fed347c8b461311fc56a00d08e6e0a1636(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@7b549412f74dd3dff68039bb66b2a138ae6025b8(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))
       '@tanstack/ai-harness':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(turndown@7.2.4)
       '@tanstack/ai-mcp':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(@tanstack/ai-harness@https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)))(zod@4.4.3)
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(@tanstack/ai-harness@https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(turndown@7.2.4))(zod@4.4.3)
       '@tanstack/ai-mistral':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(google-auth-library@10.9.1)
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(google-auth-library@10.9.1)
       '@tanstack/ai-models':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8
       '@tanstack/ai-openai':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
       '@tanstack/ai-persistence':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)))
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)))
       '@valibot/to-json-schema':
         specifier: ^1.3.0
         version: 1.7.1(valibot@1.4.2(typescript@7.0.2))
@@ -1889,7 +1889,7 @@ importers:
         version: 2.0.12(hono@4.12.32)
       agents:
         specifier: ^0.20.1
-        version: 0.20.1(@babel/core@8.0.1)(@babel/runtime@7.29.7)(@cloudflare/workers-types@5.20260731.1)(@modelcontextprotocol/client@2.0.0)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(@modelcontextprotocol/server@2.0.0)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(chat@4.35.0(zod@4.4.3))(just-bash@3.2.0)(react@19.2.8)(rolldown@1.2.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))(zod@4.4.3)
+        version: 0.20.1(@babel/core@8.0.1)(@babel/runtime@7.29.7)(@cloudflare/workers-types@5.20260731.1)(@modelcontextprotocol/client@2.0.0)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(@modelcontextprotocol/server@2.0.0)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(chat@4.35.0(zod@4.4.3))(just-bash@3.2.0)(react@19.2.8)(rolldown@1.2.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))(zod@4.4.3)
       magic-string:
         specifier: ^1.0.0
         version: 1.1.0
@@ -1904,8 +1904,8 @@ importers:
         specifier: ^1.39.2
         version: 1.49.0(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))(wrangler@4.116.0(@cloudflare/workers-types@5.20260731.1))
       '@tanstack/ai':
-        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636
-        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
+        specifier: https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+        version: https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
       hono:
         specifier: ^4.12.32
         version: 4.12.32
@@ -5487,53 +5487,60 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@tanstack/ai-anthropic@https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-anthropic@https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-nstmdimMbQfnxMtwwsd7JJr4aYlcSQfg2La5XcofbTsp54do0PZjE41PERk8+uJHMDEmDE8pd+2cv+eMyP1OmQ==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.19.5
     peerDependencies:
       '@anthropic-ai/vertex-sdk': ^0.19.0
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
     peerDependenciesMeta:
       '@anthropic-ai/vertex-sdk':
         optional: true
 
-  '@tanstack/ai-bedrock@https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-bedrock@https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-ZbFWcaQa2n7WM9Y/HWwbIIbA7mKOxkVm9yJboOaRkg9NKy5GCjEktK5oNw6SNJC+bUUZVWlfOa4GpvkyipCX1g==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.4.3
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
 
-  '@tanstack/ai-cloudflare@https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-cloudflare@https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-WuN7yxRnoPKzL/fBPrnPS4cAmfYc3Y8oPyli5Rm2H0UWM5l87C3qSGbYtjrqjOYS3ZIyqvMOf9jlPVL2DmgJHA==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.2.3
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
 
-  '@tanstack/ai-compaction@https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-compaction@https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-xE+j+W1SxeGP4Tns6iq4gC5MPdWDldUfgRVugBuZAItpIDIR4GY8sJ+srvFKHPDZ7fIrQq/xGr2L7a7LlQKm2Q==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.1.13
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
 
-  '@tanstack/ai-event-client@https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-event-client@https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-eAEIh+H908hCW+XqU/NLikMd+ZMkVa+PnMgUJCTBaFqUhPUjJzIk0xFAhHoIfCHjCFjx0RHyRGHd1f9Uw3UbMA==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.13.1
 
-  '@tanstack/ai-gemini@https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@57ea69fed347c8b461311fc56a00d08e6e0a1636}
-    version: 0.35.0
+  '@tanstack/ai-gemini@https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-NJeA7rOmJYIQYFe/RPXCz9Yy5k/yrDAthBjZGwVRDZ7SW1ibONlCC3+5KqAR4Lz27ZXsakgEq1jjlMFI897I8g==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@7b549412f74dd3dff68039bb66b2a138ae6025b8}
+    version: 0.36.0
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
 
-  '@tanstack/ai-harness@https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-harness@https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-1VgNse+AqFad5KL4w6UJ98JxMsWTjbKEdjgPUGIJy6beU6O5lPbPVgLk5dDMkePnKAsR6ZLLUqwKByAHt3GnEg==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.0.0
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
       '@tanstack/ai-persistence': ^0.8.0
+      '@vscode/ripgrep': ^1.15.0
+      turndown: ^7.2.0
+    peerDependenciesMeta:
+      '@vscode/ripgrep':
+        optional: true
+      turndown:
+        optional: true
 
-  '@tanstack/ai-mcp@https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-mcp@https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-Gqtd16GF2rL+2UOWg79GhmXauZaWXS/oab12ncL13kIOAeOqQ8zZUwx0BvlW9PHl+TnVMAxqGZPG8mD+60lssQ==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.8.0
     hasBin: true
     peerDependencies:
@@ -5542,43 +5549,43 @@ packages:
       '@tanstack/ai-harness':
         optional: true
 
-  '@tanstack/ai-mistral@https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-mistral@https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-S4TVF3cKlU7lv8pOfmzdwHkJAaqTv3HrSwfyeDSwp68x+nC/PK94kXc1XSniYnMPdMSvlob/pdMvVE6w/nOfHw==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.6.14
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
       google-auth-library: ^10.5.0
     peerDependenciesMeta:
       google-auth-library:
         optional: true
 
-  '@tanstack/ai-models@https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-models@https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-g1ofUvxLPSRklUZE1LKCkdOeiTUc+xYSrOW4SIX/QjZUPYUrmEtrVHDhRZc5fpqyfb/UlwwE+iXOc7i+3fQmpA==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.0.0
 
-  '@tanstack/ai-openai@https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-openai@https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-cr/r3dm41c5C1RAOzbcbxTm/FGO0K4QCiLnpDhHhk5ly3g3eQOI1smGu3jh9BUzxthkJYQT/I5kcgHD2G73/fg==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.27.0
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
 
-  '@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-EAAMWj6NA1jqIxzHxfr86ZkHipe4MYyMUOOzPrGZaX7p4q6zjKTnkFlxCjB3EwJ/A9CdNxXasDyT3tbUUalENQ==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.8.0
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
       vitest: ^4.1.10
     peerDependenciesMeta:
       vitest:
         optional: true
 
-  '@tanstack/ai-utils@https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/ai-utils@https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-NOhPc22e25AVbsy/eCHvUcwGzIhhH+8a3vs6YIRsCoxGfh0h71al1ntZLTID8JZ0g108dUvbGov8oQxM0cziBA==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.4.1
 
-  '@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636}
-    version: 0.65.0
+  '@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-UjyiNcCCAbAnp22o/vSOub8lh2I8A/M2MbwPGIEq5ei9sjsDTbp3Eyaysa1Er7TOGyw4vwbR+fp1Lz1cTvG/LQ==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8}
+    version: 0.65.1
     engines: {node: '>=18'}
     peerDependencies:
       '@opentelemetry/api': '>=1.9.0'
@@ -5595,11 +5602,11 @@ packages:
     resolution: {integrity: sha512-79pf/RkhteYZTRgcR4F9kbk84P2N8rugQJswxfIqovlbRiT3yI7eBE+5QorIrZaOKktsgzRlXh1l/du/xpl4iA==}
     engines: {node: '>=20.19'}
 
-  '@tanstack/openai-base@https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@57ea69fed347c8b461311fc56a00d08e6e0a1636':
-    resolution: {tarball: https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@57ea69fed347c8b461311fc56a00d08e6e0a1636}
+  '@tanstack/openai-base@https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8':
+    resolution: {integrity: sha512-4qGLbgMd0GPJ1hrwZ/zjXP49OcEPvwQ3+wN5AvnlnAYc+rcLPngtPe1woMhxVF47plSwmtJeA1GsG2gGQNJ/nA==, tarball: https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8}
     version: 0.12.4
     peerDependencies:
-      '@tanstack/ai': ^0.65.0
+      '@tanstack/ai': ^0.65.1
 
   '@tanstack/react-router@1.170.18':
     resolution: {integrity: sha512-wpbGYZEp/fmz1q4bn7BD8VZ+/VZ7GBqSJv5V969pU+chP8y7dquWDmKTFMohvUegb9lg12m1uPVvD6kB2wORvQ==}
@@ -9985,7 +9992,7 @@ snapshots:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/types': 3.974.6
       '@smithy/core': 3.35.0
-      '@smithy/fetch-http-handler': 5.6.13
+      '@smithy/fetch-http-handler': 5.8.0
       '@smithy/node-http-handler': 4.12.1
       '@smithy/types': 4.19.0
       tslib: 2.8.1
@@ -13306,23 +13313,23 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)
 
-  '@tanstack/ai-anthropic@https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(zod@4.4.3)':
+  '@tanstack/ai-anthropic@https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.97.1(zod@4.4.3)
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
     transitivePeerDependencies:
       - zod
 
-  '@tanstack/ai-bedrock@https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)':
+  '@tanstack/ai-bedrock@https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)':
     dependencies:
       '@aws-crypto/sha256-js': 5.2.0
       '@aws-sdk/client-bedrock-runtime': 3.1127.0
       '@aws-sdk/credential-providers': 3.1146.0
       '@smithy/signature-v4': 5.7.3
       '@smithy/types': 4.19.0
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
       openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(ws@8.21.1)(zod@4.4.3)
     transitivePeerDependencies:
       - '@aws-sdk/credential-provider-node'
@@ -13330,12 +13337,12 @@ snapshots:
       - ws
       - zod
 
-  '@tanstack/ai-cloudflare@https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)':
+  '@tanstack/ai-cloudflare@https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)':
     dependencies:
       '@cloudflare/workers-types': 4.20260702.1
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
-      '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
+      '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
       openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(ws@8.21.1)(zod@4.4.3)
     transitivePeerDependencies:
       - '@aws-sdk/credential-provider-node'
@@ -13344,19 +13351,19 @@ snapshots:
       - ws
       - zod
 
-  '@tanstack/ai-compaction@https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))':
+  '@tanstack/ai-compaction@https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))':
     dependencies:
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
 
-  '@tanstack/ai-event-client@https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@57ea69fed347c8b461311fc56a00d08e6e0a1636':
+  '@tanstack/ai-event-client@https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@7b549412f74dd3dff68039bb66b2a138ae6025b8':
     dependencies:
       '@tanstack/devtools-event-client': 0.4.4
 
-  '@tanstack/ai-gemini@https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@57ea69fed347c8b461311fc56a00d08e6e0a1636(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))':
+  '@tanstack/ai-gemini@https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@7b549412f74dd3dff68039bb66b2a138ae6025b8(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))':
     dependencies:
       '@google/genai': 2.21.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
       partial-json: 0.1.7
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
@@ -13364,42 +13371,44 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@tanstack/ai-harness@https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))':
+  '@tanstack/ai-harness@https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(turndown@7.2.4)':
     dependencies:
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-persistence': https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)))
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai-persistence': https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)))
       '@tanstack/store': 0.11.2
+    optionalDependencies:
+      turndown: 7.2.4
 
-  '@tanstack/ai-mcp@https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(@tanstack/ai-harness@https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)))(zod@4.4.3)':
+  '@tanstack/ai-mcp@https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(@tanstack/ai-harness@https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(turndown@7.2.4))(zod@4.4.3)':
     dependencies:
       '@modelcontextprotocol/client': 2.0.0
       '@modelcontextprotocol/server': 2.0.0
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
       jose: 6.2.12
     optionalDependencies:
-      '@tanstack/ai-harness': https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))
+      '@tanstack/ai-harness': https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))))(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(turndown@7.2.4)
     transitivePeerDependencies:
       - '@opentelemetry/api'
       - zod
 
-  '@tanstack/ai-mistral@https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(google-auth-library@10.9.1)':
+  '@tanstack/ai-mistral@https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(google-auth-library@10.9.1)':
     dependencies:
       '@mistralai/mistralai': 2.2.0
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
     optionalDependencies:
       google-auth-library: 10.9.1
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@tanstack/ai-models@https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636': {}
+  '@tanstack/ai-models@https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8': {}
 
-  '@tanstack/ai-openai@https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)':
+  '@tanstack/ai-openai@https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)':
     dependencies:
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
-      '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
+      '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)
       openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(ws@8.21.1)(zod@4.4.3)
     transitivePeerDependencies:
       - '@aws-sdk/credential-provider-node'
@@ -13408,21 +13417,21 @@ snapshots:
       - ws
       - zod
 
-  '@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)))':
+  '@tanstack/ai-persistence@https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)))':
     dependencies:
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
     optionalDependencies:
       vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.2)(happy-dom@20.11.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))
 
-  '@tanstack/ai-utils@https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636': {}
+  '@tanstack/ai-utils@https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8': {}
 
-  '@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)':
+  '@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)':
     dependencies:
       '@ag-ui/core': 1.0.0(zod@4.4.3)
       '@standard-schema/spec': 1.1.0
-      '@tanstack/ai-event-client': https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@57ea69fed347c8b461311fc56a00d08e6e0a1636
-      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
+      '@tanstack/ai-event-client': https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@7b549412f74dd3dff68039bb66b2a138ae6025b8
+      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
       fast-json-patch: 3.1.1
       partial-json: 0.1.7
       typebox: 1.3.27
@@ -13435,10 +13444,10 @@ snapshots:
 
   '@tanstack/history@1.162.0': {}
 
-  '@tanstack/openai-base@https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@57ea69fed347c8b461311fc56a00d08e6e0a1636(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)':
+  '@tanstack/openai-base@https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(ws@8.21.1)(zod@4.4.3)':
     dependencies:
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
-      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
       openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(ws@8.21.1)(zod@4.4.3)
     transitivePeerDependencies:
       - '@aws-sdk/credential-provider-node'
@@ -13959,7 +13968,7 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  agents@0.20.1(@babel/core@8.0.1)(@babel/runtime@7.29.7)(@cloudflare/workers-types@5.20260731.1)(@modelcontextprotocol/client@2.0.0)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(@modelcontextprotocol/server@2.0.0)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3))(chat@4.35.0(zod@4.4.3))(just-bash@3.2.0)(react@19.2.8)(rolldown@1.2.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))(zod@4.4.3):
+  agents@0.20.1(@babel/core@8.0.1)(@babel/runtime@7.29.7)(@cloudflare/workers-types@5.20260731.1)(@modelcontextprotocol/client@2.0.0)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(@modelcontextprotocol/server@2.0.0)(@tanstack/ai@https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3))(chat@4.35.0(zod@4.4.3))(just-bash@3.2.0)(react@19.2.8)(rolldown@1.2.1)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))(zod@4.4.3):
     dependencies:
       '@babel/plugin-proposal-decorators': 8.0.2(@babel/core@8.0.1)
       '@cfworker/json-schema': 4.1.1
@@ -13978,7 +13987,7 @@ snapshots:
       yargs: 18.1.0
       zod: 4.4.3
     optionalDependencies:
-      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636(@opentelemetry/api@1.9.1)(zod@4.4.3)
+      '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8(@opentelemetry/api@1.9.1)(zod@4.4.3)
       chat: 4.35.0(zod@4.4.3)
       just-bash: 3.2.0
       vite: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)

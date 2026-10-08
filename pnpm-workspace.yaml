@@ -48,19 +48,19 @@ minimumReleaseAgeExclude:
 # commit. Their peer ranges point at npm, so these overrides keep every
 # workspace package on the preview build.
 overrides:
-  '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-event-client': https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-harness': https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-persistence': https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-models': https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-compaction': https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-mcp': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-anthropic': https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-openai': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-gemini': https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-bedrock': https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-mistral': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-openrouter': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openrouter@57ea69fed347c8b461311fc56a00d08e6e0a1636
-  '@tanstack/ai-cloudflare': https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@57ea69fed347c8b461311fc56a00d08e6e0a1636
+  '@tanstack/ai': https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-utils': https://pkg.pr.new/TanStack/ai/@tanstack/ai-utils@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-event-client': https://pkg.pr.new/TanStack/ai/@tanstack/ai-event-client@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-harness': https://pkg.pr.new/TanStack/ai/@tanstack/ai-harness@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-persistence': https://pkg.pr.new/TanStack/ai/@tanstack/ai-persistence@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-models': https://pkg.pr.new/TanStack/ai/@tanstack/ai-models@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-compaction': https://pkg.pr.new/TanStack/ai/@tanstack/ai-compaction@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-mcp': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mcp@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-anthropic': https://pkg.pr.new/TanStack/ai/@tanstack/ai-anthropic@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-openai': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openai@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/openai-base': https://pkg.pr.new/TanStack/ai/@tanstack/openai-base@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-gemini': https://pkg.pr.new/TanStack/ai/@tanstack/ai-gemini@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-bedrock': https://pkg.pr.new/TanStack/ai/@tanstack/ai-bedrock@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-mistral': https://pkg.pr.new/TanStack/ai/@tanstack/ai-mistral@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-openrouter': https://pkg.pr.new/TanStack/ai/@tanstack/ai-openrouter@7b549412f74dd3dff68039bb66b2a138ae6025b8
+  '@tanstack/ai-cloudflare': https://pkg.pr.new/TanStack/ai/@tanstack/ai-cloudflare@7b549412f74dd3dff68039bb66b2a138ae6025b8
