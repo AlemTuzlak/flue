@@ -13,6 +13,7 @@ import type {
 } from './conversation-stream-store.ts';
 import { createFlueLeaseStore } from './harness-lease-store.ts';
 import { createFlueLogStore } from './harness-log-store.ts';
+import { seedMessagesOf } from './harness-seed.ts';
 
 /**
  * The durable harness host of one agent instance. Its log is the instance
@@ -27,8 +28,8 @@ import { createFlueLogStore } from './harness-log-store.ts';
  * alive from `acquire` to `release`. Use it where no other process can run
  * the instance (the local runtime).
  *
- * The host folds Flue's `signal` records into the model context of their
- * thread (see {@link projectFlueRecord}).
+ * The host folds Flue's `signal` records and the seed record of an old
+ * thread into the model context of their thread (see {@link projectFlueRecord}).
  *
  * @example
  * ```ts
@@ -64,7 +65,7 @@ export function createInstanceHarnessHost(options: {
 		: createProcessLeaseStore();
 	return createHarnessHost({
 		persistence: defineAIPersistence({ stores: { log, leases } }),
-		project: { record: projectFlueRecord, version: 'flue-signals-1' },
+		project: { record: projectFlueRecord, version: 'flue-signals-2' },
 		coalesceMs: 1000,
 		// The harness renews the lease three times in each lease period.
 		lease: { ttlMs: LEASE_DURATION_MS, renewMs: LEASE_DURATION_MS / 3 },
@@ -124,20 +125,27 @@ const UNPROJECTED_SIGNAL_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * The host `project` fold of Flue's records: the records that change the
- * model context without a harness input. That is a `signal` record
- * (narration, advisories, `ctx.append`, a delivered signal), which adds one
- * user message with the rendered signal, as `buildConversationContext`
- * renders it. The recovery pair (`stream_interrupted`, `stream_continued`)
- * is left out. User inputs and assistant and tool messages are left out too:
+ * model context without a harness input.
+ *
+ * - The seed record of an old thread (see `harness-seed.ts`) replaces the
+ *   transcript with its messages.
+ * - A `signal` record (narration, advisories, `ctx.append`, a delivered
+ *   signal) adds one user message with the rendered signal, as
+ *   `buildConversationContext` renders it.
+ *
+ * The recovery pair (`stream_interrupted`, `stream_continued`) is left out.
+ * User inputs and assistant and tool messages are left out too:
  * the harness transcript has them from the prompt and the model calls.
  *
- * The fold is pure: the same record always adds the same message.
+ * The fold is pure: the same record always gives the same change.
  */
 export function projectFlueRecord(args: {
 	messages: ReadonlyArray<ModelMessage>;
 	record: LogRecord;
 }) {
 	const { messages, record } = args;
+	const seed = seedMessagesOf(record);
+	if (seed) return [...seed];
 	if (record.type !== 'signal' || record.v !== 1) return undefined;
 	const { signalType, content, tagName, attributes, messageId } = record;
 	if (typeof signalType !== 'string' || typeof content !== 'string') return undefined;
