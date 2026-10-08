@@ -15,8 +15,8 @@ allowBuilds:
 minimumReleaseAge: 1440
 # The TanStack AI preview packages come from pkg.pr.new and load each other by
 # URL, which this check blocks even when the URLs are pinned. The `overrides`
-# below pin every one of them to a single full commit SHA. The lockfile has no
-# integrity hash for these tarballs, so the SHA in the URL is the only pin.
+# below pin every one of them to a single full commit SHA, and the lockfile
+# records an integrity hash for each tarball.
 # Remove this line when TanStack AI is on npm.
 blockExoticSubdeps: false
 resolutionMode: highest

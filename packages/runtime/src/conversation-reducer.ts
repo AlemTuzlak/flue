@@ -448,10 +448,7 @@ function cloneReducedInstanceState(state: ReducedInstanceState): ReducedInstance
 	};
 }
 
-export function applyConversationRecord(
-	state: ReducedInstanceState,
-	record: ConversationRecord,
-): void {
+function applyConversationRecord(state: ReducedInstanceState, record: ConversationRecord): void {
 	// The harness part of a harness log append. The Flue records of the
 	// append are at the top level of the batch and apply on their own, and
 	// this record leaves no index entry.

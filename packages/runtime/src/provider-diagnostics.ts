@@ -31,7 +31,7 @@
 import type { AssistantMessage, AssistantMessageDiagnostic } from './llm-types.ts';
 
 /** Diagnostic `type` under which providers attach response metadata. */
-export const PROVIDER_RESPONSE_DIAGNOSTIC = 'flue:provider_response';
+const PROVIDER_RESPONSE_DIAGNOSTIC = 'flue:provider_response';
 
 /**
  * Allowlisted provider-response metadata projected onto `turn` observations.

@@ -5,7 +5,10 @@
 	"ignoreIssues": {
 		"packages/runtime/src/runtime/schemas.ts": ["duplicates"],
 		"packages/runtime/src/sandbox.ts": ["duplicates"],
-		"examples/cloudflare/src/sandboxes/cloudflare-computer.ts": ["exports", "types"]
+		"examples/cloudflare/src/sandboxes/cloudflare-computer.ts": ["exports", "types"],
+		"examples/salesforce-marketing-cloud-channel/src/salesforce-marketing-cloud-email.ts": [
+			"exports"
+		]
 	},
 	"workspaces": {
 		".": {
@@ -32,7 +35,6 @@
 			]
 		},
 		"packages/runtime": {
-			"entry": ["test/fixtures/durable-boundary-child.mjs"],
 			"ignoreDependencies": ["@hono/node-server"]
 		}
 	}

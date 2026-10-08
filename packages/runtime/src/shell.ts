@@ -6,9 +6,9 @@
  * two surfaces.
  */
 
-import type { AgentToolResult } from './llm-types.ts';
 import { formatBashResult } from './agent.ts';
 import { type FlueExecutionContext, interceptExecution } from './execution-interceptor.ts';
+import type { AgentToolResult } from './llm-types.ts';
 import { generateToolCallId } from './runtime/ids.ts';
 import type {
 	FlueEventInput,

@@ -17,7 +17,7 @@ import { type FlueModelInfo, modelInfo, toModelRequest, toUserInput } from '../m
 import type { FlueModel } from '../providers/provider.ts';
 
 /** The type of the seed record. It is a host record, not a Flue conversation record. */
-export const FLUE_SEED_RECORD_TYPE = 'flue.seed';
+const FLUE_SEED_RECORD_TYPE = 'flue.seed';
 
 /**
  * The transcript that the durable path stores for Flue's model context

@@ -3,7 +3,6 @@ import {
 	ToolOutputSerializationError,
 	ToolOutputValidationError,
 } from './errors.ts';
-import { composeTimeoutSignal, raceToolWithDeadline } from './abort.ts';
 import { cloneJsonSerializable } from './json-snapshot.ts';
 import type { McpToolAnnotations } from './mcp-types.ts';
 import { generateToolCallId } from './runtime/ids.ts';
@@ -325,34 +324,6 @@ function validateToolOutput<TTool extends ToolDefinition>(
 	} catch (cause) {
 		throw new ToolOutputSerializationError({ tool: tool.name, cause });
 	}
-}
-
-export async function validateAndRunTool<TTool extends ToolDefinition>(
-	tool: TTool,
-	data?: unknown,
-	signal?: AbortSignal,
-): Promise<ToolOutput<TTool>> {
-	if (tool.harness) {
-		throw new Error(
-			`[flue] Tool "${tool.name}" declares \`harness: true\` and can only run inside an agent session — a standalone run has no harness.`,
-		);
-	}
-	// The merged signal carries the per-tool deadline (when declared) so the
-	// tool's `context.signal` aborts on expiry; the race settles the deadline
-	// with a distinguishable ToolTimeoutError like the harness path does.
-	const { mergedSignal } = composeTimeoutSignal(tool.timeoutMs, signal);
-	const parsed = parseToolInput(tool, data, mergedSignal);
-	// `terminate` is a turn-loop concern; a standalone run has no turn to end,
-	// so only the resolved output survives here.
-	return resolveToolRun(
-		tool,
-		await raceToolWithDeadline(
-			() => tool.run(parsed.context),
-			mergedSignal,
-			tool.timeoutMs,
-			tool.name,
-		),
-	).output;
 }
 
 function assertNonEmptyString(value: unknown, label: string): asserts value is string {

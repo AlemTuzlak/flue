@@ -199,7 +199,7 @@ const RETRY_BASE_DELAY_MS = 2_000;
  * tool phase. The backoff is `2000 ms * 2^(n-1)` for retry `n`, times a
  * jitter from 0.75 to 1.0. The text of the failed call is dropped.
  */
-export async function retryModelErrors(ctx: ModelErrorContext) {
+async function retryModelErrors(ctx: ModelErrorContext) {
 	if (ctx.retries >= MAX_MODEL_RETRIES || !isRetryableModelError(ctx.error)) return undefined;
 	const jitter = 0.75 + Math.random() * 0.25;
 	await abortableDelay(Math.round(RETRY_BASE_DELAY_MS * 2 ** ctx.retries * jitter), ctx.signal);

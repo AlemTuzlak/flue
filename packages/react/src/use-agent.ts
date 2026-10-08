@@ -1,8 +1,8 @@
 import {
+	type AgentSendResult,
 	type ConversationLiveMode,
 	createFlueClient,
 	type FlueClient,
-	type AgentSendResult,
 } from '@flue/sdk';
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { type AgentSnapshot, emptyAgentState } from './agent-reducer.ts';

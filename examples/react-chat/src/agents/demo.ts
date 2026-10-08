@@ -1,4 +1,13 @@
 'use agent';
+import { setProvider, useDataWriter, useModel, useTool } from '@flue/runtime';
+import {
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxText,
+	fauxToolCall,
+} from '@flue/runtime/test-utils/faux';
+import * as v from 'valibot';
+
 /**
  * Formerly a `defineAction` demo (and before that `src/workflows/demo.ts`).
  * Actions are gone: a background job is deterministic code in a model-callable
@@ -7,14 +16,6 @@
  * returns through the conversation like any other tool call. (Code that must
  * drive models declares `harness: true` and receives `ctx.harness`.)
  */
-import {
-	fauxAssistantMessage,
-	fauxProvider,
-	fauxText,
-	fauxToolCall,
-} from '@flue/runtime/test-utils/faux';
-import { setProvider, useDataWriter, useModel, useTool } from '@flue/runtime';
-import * as v from 'valibot';
 
 // Scripted model so the demo runs fully offline. Module scope, not the agent
 // body: the agent function is a render that may re-run. Responses are consumed
