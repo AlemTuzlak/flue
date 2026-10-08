@@ -150,6 +150,13 @@ export interface AgentLoopOptions {
 	 * tools, and {@link AgentLoop.recoverTurns} follows it.
 	 */
 	recover?: RecoverHook;
+	/**
+	 * On a durable binding: runs once the loop opened its thread, before any
+	 * input of the loop reaches the harness. A run waits for it. `inputs` are
+	 * the messages of `state.messages` that the run sends to the harness as
+	 * its inputs.
+	 */
+	onOpen?(session: HarnessSession, inputs: readonly AgentMessage[]): Promise<void>;
 	/** Whether a waiting input joins the running turn now. */
 	canJoin?: HarnessTurnOptions['canJoin'];
 	/**
@@ -780,12 +787,25 @@ export class AgentLoop {
 	}
 
 	private session() {
-		this.harnessSession ??= this.openSession();
-		return this.harnessSession;
+		if (this.harnessSession) return this.harnessSession;
+		const opening = this.openSession();
+		this.harnessSession = opening;
+		// A failed open does not stay: the next run opens the thread again.
+		opening.catch(() => {
+			if (this.harnessSession === opening) this.harnessSession = undefined;
+		});
+		return opening;
+	}
+
+	/** Open the loop's thread, and run the `onOpen` option on a durable binding. */
+	private async openSession() {
+		const session = await this.openThread();
+		if (this.options.durable) await this.options.onOpen?.(session, this.run?.newMessages ?? []);
+		return session;
 	}
 
 	/** The loop's thread: on the durable host of the binding, or on an in-memory host. */
-	private openSession() {
+	private openThread() {
 		const durable = this.options.durable;
 		const host = durable?.host ?? createHarnessHost();
 		const { canJoin, onModelError } = this.options;

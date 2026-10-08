@@ -8,7 +8,12 @@ import { modelContextCompactionFields } from './model-request-info.ts';
  */
 
 import type { ModelMessage } from '@tanstack/ai';
-import { defineHarness, type JoinContext, type RecoverContext } from '@tanstack/ai-harness';
+import {
+	defineHarness,
+	type HarnessSession,
+	type JoinContext,
+	type RecoverContext,
+} from '@tanstack/ai-harness';
 import type * as v from 'valibot';
 import {
 	abandonToolOnAbort,
@@ -186,6 +191,12 @@ import {
 	type SubmissionRecoveryLedger,
 } from './runtime/agent-submissions.ts';
 import { type AttachmentStore, createAttachmentRef } from './runtime/attachment-store.ts';
+import {
+	flueSeedRecord,
+	holdsOnlyProjectedSignals,
+	sameTranscript,
+	seedTranscriptOf,
+} from './runtime/harness-seed.ts';
 import {
 	generateBlockId,
 	generateInvocationId,
@@ -785,6 +796,18 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	private pendingHarnessInput: { entryId: string; isSignal: boolean } | undefined;
 	/** On the durable path: the running submission sent its input to the harness. */
 	private sentHarnessInput = false;
+	/**
+	 * On the durable path: the input that harness recovery resumes, while
+	 * the agent loop follows the recovery. The seed of an old thread repairs
+	 * its tail first (see {@link seedHarnessThread}).
+	 */
+	private resumingInput: { entryId: string; signal: AbortSignal } | undefined;
+	/**
+	 * On the durable path: the resumed input came from an old stream, so the
+	 * harness has no input for it. Its turn continues from the seeded
+	 * transcript (see `startInputTurn`).
+	 */
+	private continuesOldInput = false;
 	/** Flue's ledger for the harness `recover` hook, while a submission runs. */
 	private activeRecovery: SubmissionRecoveryLedger | undefined;
 	/** What the harness `recover` hook decided for each submission, while a submission runs. */
@@ -2111,8 +2134,15 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	private async startInputTurn(): Promise<void> {
 		const input = this.pendingHarnessInput;
 		this.pendingHarnessInput = undefined;
-		if (!input) return this.agentLoop.continue();
 		const inputId = this.activeSubmissionId;
+		if (this.continuesOldInput) {
+			// The input of an old stream: the seeded transcript ends with it, and
+			// the turn continues under the submission id.
+			this.continuesOldInput = false;
+			this.sentHarnessInput = inputId !== undefined;
+			return this.agentLoop.continueTurn(inputId ? { inputId } : {});
+		}
+		if (!input) return this.agentLoop.continue();
 		this.sentHarnessInput = inputId !== undefined;
 		if (input.isSignal) return this.agentLoop.continueTurn(inputId ? { inputId } : {});
 		// Flue's view gets the input at the end, where the harness puts it.
@@ -2664,6 +2694,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 							logId: options.harnessHost.logId,
 						},
 						recover: (ctx: RecoverContext) => this.recoverHarnessInput(ctx),
+						onOpen: (session: HarnessSession, inputs: readonly AgentMessage[]) =>
+							this.seedHarnessThread(session, inputs),
 						onToolCall: (call: HarnessToolCall) => this.harnessToolCalls.set(call.toolCallId, call),
 						canJoin: () => this.activeJoinSignal?.aborted !== true,
 						onJoin: (ctx: JoinContext) => this.joinHarnessInputs(ctx),
@@ -3903,6 +3935,82 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			action: 'settle' as const,
 			outcome: verdict.outcome,
 			error: { message: verdict.error.message, code: verdict.error.type },
+		};
+	}
+
+	/**
+	 * The `onOpen` of the agent loop on the durable path: seed an old thread.
+	 * A stream that Flue wrote before the harness has no harness transcript,
+	 * so the harness would answer with no history. The seed record makes
+	 * Flue's model context the transcript (see `harness-seed.ts`).
+	 *
+	 * A thread needs the seed when the harness runs nothing on it and its
+	 * transcript holds no message that the harness wrote: only messages that
+	 * the `project` fold made from signal records. A seeded thread holds the
+	 * seed messages, so it never gets a second seed. A new conversation needs
+	 * none: its context is empty or holds only signals, and that is the
+	 * transcript already (the new input reaches the harness as its input).
+	 *
+	 * While harness recovery resumes an input that the harness did not
+	 * recover, the input came from an old stream. Its tail comes to rest
+	 * first, as Flue's own resume does it: a cut answer ends as an aborted
+	 * assistant (with the stream recovery signals when it has content), and
+	 * a cut tool batch gets its outcomes. The seed then ends with a user or a
+	 * tool message, and the turn continues from it (see `startInputTurn`).
+	 *
+	 * `inputs` are the messages that the run sends to the harness as inputs.
+	 * They are not part of the seed.
+	 */
+	private async seedHarnessThread(session: HarnessSession, inputs: readonly AgentMessage[]) {
+		const snapshot = session.snapshot();
+		if (
+			snapshot.status !== 'idle' ||
+			snapshot.activeOperations.length > 0 ||
+			snapshot.queuedTurns > 0
+		)
+			return;
+		const resuming = this.resumingInput;
+		const submissionId = this.activeSubmissionId;
+		// The `recover` hook decided the input: the harness has it.
+		if (resuming && submissionId !== undefined && this.recoveryVerdicts.has(submissionId)) return;
+		const conversation = await this.conversationWriter.getConversation(this.conversationId);
+		if (!conversation) return;
+		const transcript = await session.transcript();
+		const signalIds = new Set<string>();
+		for (const entry of conversation.entries.values()) {
+			if (entry.type === 'message' && entry.message.role === 'signal') signalIds.add(entry.id);
+		}
+		if (!holdsOnlyProjectedSignals(transcript, signalIds)) return;
+		if (resuming) {
+			await this.materializeGhostStream(
+				submissionId === undefined ? { submissionId: undefined } : 'any',
+			);
+			await this.repairResumableTail(resuming.entryId, resuming.signal);
+			await this.rebuildCanonicalContext();
+			this.continuesOldInput = true;
+		}
+		// The inputs of the run reach the harness as its inputs, after the seed.
+		const context = this.agentLoop.state.messages.filter((message) => !inputs.includes(message));
+		const model = this.agentLoop.state.model;
+		const seed = seedTranscriptOf(context, model, await this.adapterSource(context, model));
+		if (sameTranscript(transcript, seed)) return;
+		await session.append([flueSeedRecord(this.conversationId, seed)]);
+	}
+
+	/**
+	 * The TanStack source that a model call on `model` gives its answer: the
+	 * identity of the model's adapter. Only an assistant message of
+	 * `context` needs it, so a context without one makes no adapter.
+	 */
+	private async adapterSource(context: readonly AgentMessage[], model: FlueModel) {
+		if (!context.some((message) => message.role === 'assistant')) {
+			return { provider: model.provider, api: model.api, model: model.id };
+		}
+		const adapter = await this.providerAdapter(model, new AbortController().signal);
+		return {
+			provider: adapter.provider ?? adapter.name,
+			api: adapter.api ?? adapter.kind,
+			model: model.id,
 		};
 	}
 
@@ -6500,11 +6608,17 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		// reclassifies `tool_results`, an upgraded partial reclassifies
 		// `stream_continuation`.
 		if (options.harnessRecovers) {
-			await this.runModelTurnWithRecovery({
-				start: () => this.agentLoop.recoverTurns(),
-				signal: options.signal,
-				recovers: true,
-			});
+			this.resumingInput = { entryId: options.inputEntryId, signal: options.signal };
+			this.continuesOldInput = false;
+			try {
+				await this.runModelTurnWithRecovery({
+					start: () => this.agentLoop.recoverTurns(),
+					signal: options.signal,
+					recovers: true,
+				});
+			} finally {
+				this.resumingInput = undefined;
+			}
 			this.throwIfError(options.errorLabel);
 			if (await this.settleRecoveredSubmission()) return true;
 		} else {
@@ -6789,6 +6903,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					this.pendingSignalAppends = [];
 					this.pendingHarnessInput = undefined;
 					this.sentHarnessInput = false;
+					this.continuesOldInput = false;
 					this.activeRecovery = undefined;
 					this.recoveryVerdicts.clear();
 					this.harnessJoins.clear();
