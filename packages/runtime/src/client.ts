@@ -82,10 +82,10 @@ export interface FlueContextConfig {
 	mcpConnections?: McpConnectionResolver;
 	/**
 	 * The durable harness host of the instance, and its log (the instance
-	 * stream path). With it, every Flue session runs as a thread of the host,
-	 * and `conversationWriter` must be a writer over the same log
-	 * (`ConversationRecordWriter.overHarness`). Without it, sessions run on
-	 * an in-memory harness and the writer appends to the stream itself.
+	 * stream path). Every Flue session runs as a thread of the host, and
+	 * `conversationWriter` must be a writer over the same log
+	 * (`ConversationRecordWriter.overHarness`). Set it with the writer. A
+	 * context with neither makes a local runtime with its own host.
 	 */
 	harnessHost?: InstanceHarnessBinding;
 }
@@ -333,7 +333,10 @@ async function initializeRootHarness(
 	if (!config.conversationWriter || !config.attachmentStore) {
 		throw new Error('[flue] Canonical conversation runtime is not configured.');
 	}
-	if (config.harnessHost && !config.conversationWriter.throughHarness) {
+	if (!config.harnessHost) {
+		throw new Error('[flue] A context with a conversation writer needs its harness host.');
+	}
+	if (!config.conversationWriter.throughHarness) {
 		throw new Error(
 			'[flue] A context with a harness host needs a conversation writer over its log (ConversationRecordWriter.overHarness).',
 		);
@@ -526,7 +529,7 @@ async function initializeRootHarness(
 		toolFactory,
 		conversationWriter: config.conversationWriter,
 		attachmentStore: config.attachmentStore,
-		...(config.harnessHost ? { harnessHost: config.harnessHost } : {}),
+		harnessHost: config.harnessHost,
 		executionContext: { instanceId: config.id },
 		hookState,
 		rerender,

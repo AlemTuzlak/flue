@@ -485,7 +485,7 @@ function isCompletedAssistantResponse(message: AssistantMessage): boolean {
 	return message.stopReason === 'stop' || message.stopReason === 'length';
 }
 
-export function countConsecutiveRetryableModelErrors(
+function countConsecutiveRetryableModelErrors(
 	entries: readonly CanonicalSubmissionEntry[],
 ): number {
 	let count = 0;

@@ -214,11 +214,7 @@ import { valibotToJsonSchema } from './schema.ts';
 import { execShellWithEvents, getErrorMessage } from './shell.ts';
 import { isSkillDefinition, packageSkillDefinition } from './skill-definition.ts';
 import { getSkillReferenceDirectory } from './skill-package.ts';
-import {
-	countConsecutiveRetryableModelErrors,
-	findTrailingPartialToolBatch,
-	isRetryableModelError,
-} from './submission-state.ts';
+import { findTrailingPartialToolBatch } from './submission-state.ts';
 import {
 	assertToolDefinition,
 	claimStepName,
@@ -273,7 +269,6 @@ interface ModelCallOptions {
 }
 
 const MAX_DELEGATION_DEPTH = 4;
-const MAX_TRANSIENT_MODEL_RETRIES = 3;
 /**
  * Defense-in-depth ceiling on `useAgentFinish` continuations per response —
  * far above sane usage (each continuation costs a model turn), matching the
@@ -284,7 +279,6 @@ const MAX_TRANSIENT_MODEL_RETRIES = 3;
 const MAX_AGENT_FINISH_CYCLES = 32;
 /** Reminders after an answer without `finish` or `give_up`, in one structured-result call. */
 const MAX_RESULT_FOLLOWUPS = 32;
-const TRANSIENT_MODEL_RETRY_BASE_DELAY_MS = 2_000;
 
 type TurnInputMessage = Extract<
 	FlueEvent,
@@ -478,11 +472,11 @@ interface SessionInitOptions {
 	conversationWriter: ConversationRecordWriter;
 	attachmentStore: AttachmentStore;
 	/**
-	 * The durable host of the instance. With it, the agent loop runs as the
-	 * thread `conversationId` of the host, the harness transcript is the
-	 * model context, and `conversationWriter` writes over the host's log.
+	 * The durable host of the instance. The agent loop runs as the thread
+	 * `conversationId` of the host, the harness transcript is the model
+	 * context, and `conversationWriter` writes over the host's log.
 	 */
-	harnessHost?: InstanceHarnessBinding;
+	harnessHost: InstanceHarnessBinding;
 	executionContext?: FlueExecutionContext;
 	/**
 	 * `usePersistentState` write buffer from the harness's render (function agents
@@ -686,27 +680,6 @@ function parseProviderEndpoint(
 	}
 }
 
-function modelRetryDelayMs(attempt: number): number {
-	const baseDelay = TRANSIENT_MODEL_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
-	return Math.round(baseDelay * (0.75 + Math.random() * 0.25));
-}
-
-function sleepUntilRetry(delayMs: number, signal: AbortSignal): Promise<void> {
-	if (signal.aborted) return Promise.reject(abortErrorFor(signal));
-	return new Promise((resolve, reject) => {
-		const timer = setTimeout(() => {
-			signal.removeEventListener('abort', onAbort);
-			resolve();
-		}, delayMs);
-		const onAbort = () => {
-			clearTimeout(timer);
-			signal.removeEventListener('abort', onAbort);
-			reject(abortErrorFor(signal));
-		};
-		signal.addEventListener('abort', onAbort, { once: true });
-	});
-}
-
 export class Session implements FlueSession, AgentSubmissionSession {
 	readonly name: string;
 	readonly conversationId: string;
@@ -749,7 +722,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	}
 	private envRuntime: SandboxRuntime | undefined;
 	private compactionAbortController: AbortController | undefined;
-	private modelRetryAbortController: AbortController | undefined;
 	private eventCallback: FlueEventInputCallback | undefined;
 	private agentTools: ToolDefinition[];
 	private activeHarnessTools: HarnessToolLineage;
@@ -786,7 +758,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	private activeSubmissionAttemptId: string | undefined;
 	private conversationWriter: ConversationRecordWriter;
 	private attachmentStore: AttachmentStore;
-	private harnessHost: InstanceHarnessBinding | undefined;
+	private harnessHost: InstanceHarnessBinding;
 	/** The running calls of bridged tools on the durable path: their steps and staged records, by call id. */
 	private harnessToolCalls = new Map<string, HarnessToolCall>();
 	/**
@@ -1732,63 +1704,13 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		if (await this.hasPendingSteeredContinuation(submissionId)) {
 			await driveContinuation();
 		}
-		if (this.harnessHost) {
-			// The harness ran the finish cycles in `beforeFinish`. A delivery
-			// that came after the last turn boundary runs as a new turn of the
-			// response, with its submission id as the input id.
-			this.throwFinishCycleFailure();
-			while ((await this.applyQueuedJoins()) > 0) {
-				await driveContinuation();
-				this.throwFinishCycleFailure();
-			}
-			return;
-		}
-		for (;;) {
-			if ((await this.applyQueuedJoins()) > 0) {
-				await driveContinuation();
-				continue;
-			}
-			const hooks = this.outputChannel?.agentFinishes ?? [];
-			if (hooks.length === 0) return;
-			const cycle = await this.countAgentFinishCycles(submissionId);
-			const toolCalls = await this.collectResponseToolCalls(submissionId);
-			const before = this.pendingSignalAppends.length;
-			// Re-read declarations each cycle: render-per-turn agents re-render on
-			// continuation turns, refreshing the closures.
-			for (const [index, hook] of hooks.entries()) {
-				await this.executeAgentFinishHook(index, hook, toolCalls, options.signal);
-			}
-			const stateRecords = this.drainHookStateRecords();
-			if (this.pendingSignalAppends.length === before) {
-				// No appends: the hooks are satisfied; commit any state writes.
-				if (stateRecords.length > 0) await this.appendCanonical(stateRecords);
-				// A callback may have dispatched instead of appending — that queued
-				// delivery joins now (re-firing the hooks at the new true end)
-				// rather than waking a serialized follow-up response.
-				if ((await this.applyQueuedJoins()) === 0) return;
-				await driveContinuation();
-				continue;
-			}
-			if (cycle >= MAX_AGENT_FINISH_CYCLES) {
-				throw new Error(
-					`[flue] useAgentFinish appended a continuation signal after ${MAX_AGENT_FINISH_CYCLES} continued cycles in one response — a runaway loop. The response is failing loudly instead of settling as a success; if the model cannot satisfy the check, make the hook give up explicitly (log and return) after a bounded number of attempts.`,
-				);
-			}
-			// Durable point: the cycle's signal records, state writes, and the
-			// cycle record in one batch. The signals were already steered into
-			// the live loop as they were appended; `continue()` runs them as the
-			// continuation turn.
-			const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
-			const { records } = this.drainSignalAppendRecords(parentId);
-			await this.appendCanonical([
-				...records,
-				...stateRecords,
-				{
-					...this.canonicalEnvelope('agent_finish_cycle'),
-					type: 'agent_finish_cycle',
-				},
-			]);
+		// The harness ran the finish cycles in `beforeFinish`. A delivery
+		// that came after the last turn boundary runs as a new turn of the
+		// response, with its submission id as the input id.
+		this.throwFinishCycleFailure();
+		while ((await this.applyQueuedJoins()) > 0) {
 			await driveContinuation();
+			this.throwFinishCycleFailure();
 		}
 	}
 
@@ -1914,14 +1836,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	}
 
 	/**
-	 * Give the model a signal message. On the durable path, the host's
-	 * `project` fold puts the signal's record in the harness transcript, so
-	 * the message only joins Flue's own view of the transcript. Elsewhere it
-	 * is steered into the loop.
+	 * Give the model a signal message. The host's `project` fold puts the
+	 * signal's record in the harness transcript, so the message only joins
+	 * Flue's own view of the transcript.
 	 */
 	private steerSignal(message: AgentMessage): void {
-		if (this.harnessHost) this.agentLoop.state.messages.push(message);
-		else this.agentLoop.steer(message);
+		this.agentLoop.state.messages.push(message);
 	}
 
 	/**
@@ -1930,7 +1850,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * to the harness as a steer, with its submission id as the input id. It
 	 * joins the running turn before the next model call (see
 	 * `joinHarnessInputs`). A signal delivery, and a delivery whose input
-	 * record exists already, join as on the path without a host: the host's
+	 * record exists already, join through `applyJoinedDelivery`: the host's
 	 * `project` fold puts a signal record in the transcript.
 	 */
 	private async steerQueuedJoins() {
@@ -2172,7 +2092,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 */
 	private async claimHarnessThread(): Promise<void> {
 		const binding = this.harnessHost;
-		if (!binding) return;
 		const owners = harnessThreadOwners.get(binding.host) ?? new Map<string, Session>();
 		harnessThreadOwners.set(binding.host, owners);
 		const owner = owners.get(this.conversationId);
@@ -2184,7 +2103,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	/** Close the harness session that this session's agent loop opened, if it holds one. */
 	private async releaseHarnessThread(): Promise<void> {
 		const binding = this.harnessHost;
-		if (!binding) return;
 		const owners = harnessThreadOwners.get(binding.host);
 		if (owners?.get(this.conversationId) !== this) return;
 		owners.delete(this.conversationId);
@@ -2686,25 +2604,20 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			onModelRequest: this.onModelCallRequest,
 			// The thread of this conversation on the instance host: the harness
 			// transcript is the model context.
-			...(options.harnessHost
-				? {
-						durable: {
-							host: options.harnessHost.host,
-							threadId: this.conversationId,
-							logId: options.harnessHost.logId,
-						},
-						recover: (ctx: RecoverContext) => this.recoverHarnessInput(ctx),
-						onOpen: (session: HarnessSession, inputs: readonly AgentMessage[]) =>
-							this.seedHarnessThread(session, inputs),
-						onToolCall: (call: HarnessToolCall) => this.harnessToolCalls.set(call.toolCallId, call),
-						canJoin: () => this.activeJoinSignal?.aborted !== true,
-						onJoin: (ctx: JoinContext) => this.joinHarnessInputs(ctx),
-						onJoined: () => this.finishHarnessJoins(),
-						beforeFinish: () => this.harnessBeforeFinish(),
-						rewriteContext: (messages: readonly ModelMessage[]) =>
-							this.compactedTranscript(messages),
-					}
-				: {}),
+			durable: {
+				host: options.harnessHost.host,
+				threadId: this.conversationId,
+				logId: options.harnessHost.logId,
+			},
+			recover: (ctx: RecoverContext) => this.recoverHarnessInput(ctx),
+			onOpen: (session: HarnessSession, inputs: readonly AgentMessage[]) =>
+				this.seedHarnessThread(session, inputs),
+			onToolCall: (call: HarnessToolCall) => this.harnessToolCalls.set(call.toolCallId, call),
+			canJoin: () => this.activeJoinSignal?.aborted !== true,
+			onJoin: (ctx: JoinContext) => this.joinHarnessInputs(ctx),
+			onJoined: () => this.finishHarnessJoins(),
+			beforeFinish: () => this.harnessBeforeFinish(),
+			rewriteContext: (messages: readonly ModelMessage[]) => this.compactedTranscript(messages),
 			// Render-per-turn (function agents): runs after the turn_end handler
 			// has committed the tool batch (state writes durable), so the next
 			// provider request gets fresh tool closures and a recomposed prompt.
@@ -3170,8 +3083,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 					// poll and reach the model at the next turn start — and when the
 					// model would otherwise stop, the non-empty steering queue keeps
 					// the loop running to answer them.
-					if (this.harnessHost) await this.steerQueuedJoins();
-					else await this.applyQueuedJoins();
+					await this.steerQueuedJoins();
 					this.emit({
 						type: 'turn_messages',
 						turnId,
@@ -3888,14 +3800,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		await this.appendCanonical(this.materializeInProgressStreamRecords(inProgress));
 		await this.rebuildCanonicalContext();
 		return true;
-	}
-
-	/**
-	 * True on the durable path: the harness `recover` hook decides an
-	 * interrupted submission whose input applied.
-	 */
-	get recoversThroughHarness() {
-		return this.harnessHost !== undefined;
 	}
 
 	/**
@@ -4690,7 +4594,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	abort(reason?: unknown): void {
 		this.agentLoop.abort();
 		this.compactionAbortController?.abort(reason);
-		this.modelRetryAbortController?.abort(reason);
 		for (const task of this.activeTasks) task.abort();
 		for (const harness of this.activeActionHarnesses) void harness.close();
 	}
@@ -5371,9 +5274,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		};
 	}
 
-	/** On the durable path: the retained child of the `task` call `toolCallId`, if one exists. */
+	/** The retained child of the `task` call `toolCallId`, if one exists. */
 	private async retainedTaskChild(toolCallId: string) {
-		if (!this.harnessHost) return undefined;
 		const conversation = await this.requireConversation();
 		return [...conversation.childConversations.values()].find(
 			(child): child is Extract<CanonicalChildSessionRef, { type: 'task' }> =>
@@ -5911,7 +5813,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 
 	/**
 	 * Drive the agent loop with recovery: each iteration first evaluates the
-	 * trailing assistant (overflow → compact, transient error → back off) and
+	 * trailing assistant (overflow → compact) and
 	 * then starts the next turn, so one loop body serves both live turns and
 	 * resumption of persisted state.
 	 *
@@ -5930,14 +5832,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		signal: AbortSignal;
 		resume?: { assistant: AssistantMessage | undefined; errorLabel: string };
 		/**
-		 * Re-drive for a turn whose input never became canonical (the
-		 * structured-result follow-up reminder rides only in the live loop).
-		 * Recovery rebuilds the context from canonical records, so after such a
-		 * turn fails the rebuilt context ends with the previous completed
-		 * assistant and `continue()` would throw.
-		 */
-		restart?: () => Promise<void>;
-		/**
 		 * `start` runs harness recovery. Its `recover` hook applies Flue's
 		 * limits (abort, attempts, timeout), so the first start has no halt
 		 * check for the deadline.
@@ -5949,16 +5843,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		let assistant = options.resume?.assistant;
 		let turnCompleted = false;
 		let overflowRecoveryAttempted = false;
-
-		// Evaluated lazily at start() time: overflow recovery appends a
-		// compaction record after the rebuild, so the context's final message
-		// is only settled once recovery work is done.
-		const continueRebuilt = () => {
-			if (options.restart && this.agentLoop.state.messages.at(-1)?.role === 'assistant') {
-				return options.restart();
-			}
-			return this.agentLoop.continue();
-		};
 
 		// Cooperative halt points: checked before each turn and before recovery
 		// work (compaction, retry backoff), not during provider calls. A hung
@@ -5978,15 +5862,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			const overflow =
 				assistant !== undefined &&
 				isAssistantContextOverflow(assistant, this.agentLoop.state.model.contextWindow ?? 0);
-			// On the durable path, the harness retries a transient error inside
-			// the turn (see `retryModelErrors`), so Flue does not retry it again.
-			const retryable =
-				!this.harnessHost &&
-				!overflow &&
-				assistant !== undefined &&
-				isRetryableModelError(assistant);
-
-			if (turnCompleted && !overflow && !retryable) {
+			// The harness retries a transient error inside the turn (see
+			// `retryModelErrors`), so Flue does not retry it again.
+			if (turnCompleted && !overflow) {
 				// The turn the previous iteration ran settled. This exits before
 				// the halt checks so a deadline that expired during the final
 				// turn cannot discard its result.
@@ -6032,33 +5910,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 				// for future turns; only provider errors need an immediate retry.
 				if (assistant.stopReason !== 'error') return;
 				this.internalLog('info', '[flue:compaction] Retrying after overflow recovery...');
-				start = continueRebuilt;
-			} else if (retryable && assistant !== undefined) {
-				// Count trailing consecutive errors from durable history (the error
-				// is already checkpointed) so isolated transient errors separated by
-				// successful turns don't share one budget. This keeps the live
-				// budget identical to the one a restart computes when it resumes a
-				// persisted error.
-				const canonicalConversation = await this.requireConversation();
-				const transientRetries = countConsecutiveRetryableModelErrors(
-					getActiveConversationPath(canonicalConversation).flatMap((entry) =>
-						entry.type === 'message' ? [entry] : [],
-					),
-				);
-				if (!(await this.waitForTransientModelRetry(assistant, transientRetries))) {
-					if (!turnCompleted && options.resume) {
-						throw new OperationFailedError({
-							operation: options.resume.errorLabel,
-							reason: assistant.errorMessage ?? assistant.stopReason,
-						});
-					}
-					return;
-				}
-				start = continueRebuilt;
+				start = () => this.agentLoop.continue();
 			}
 
-			// Recovery may have spent significant time compacting or backing off.
-			if (overflow || retryable) throwIfHalted();
+			// Recovery may have spent significant time compacting.
+			if (overflow) throwIfHalted();
 
 			try {
 				await start();
@@ -6073,35 +5929,6 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			const latest = messages[messages.length - 1];
 			assistant = latest?.role === 'assistant' ? (latest as AssistantMessage) : undefined;
 		}
-	}
-
-	private async waitForTransientModelRetry(
-		assistant: AssistantMessage,
-		attempt: number,
-	): Promise<boolean> {
-		if (attempt > MAX_TRANSIENT_MODEL_RETRIES) {
-			this.internalLog('warn', '[flue:model-retry] Transient model error retries exhausted', {
-				attempts: attempt - 1,
-				error: assistant.errorMessage,
-			});
-			await this.rebuildCanonicalContext();
-			return false;
-		}
-		const delayMs = modelRetryDelayMs(attempt);
-		await this.rebuildCanonicalContext();
-		this.modelRetryAbortController = new AbortController();
-		this.internalLog('warn', '[flue:model-retry] Retrying transient model error', {
-			attempt,
-			maxRetries: MAX_TRANSIENT_MODEL_RETRIES,
-			delayMs,
-			error: assistant.errorMessage,
-		});
-		try {
-			await sleepUntilRetry(delayMs, this.modelRetryAbortController.signal);
-		} finally {
-			this.modelRetryAbortController = undefined;
-		}
-		return true;
 	}
 
 	private async checkCompaction(assistantMessage: AssistantMessage): Promise<void> {
@@ -6585,9 +6412,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * input, then drive the model turn(s). Conversation-level and
 	 * submission-agnostic — used both by the top-level submission resume
 	 * (`runPersistedContextInput`) and by an in-process subagent reattach
-	 * (`resumeReattachedChild`). Both callers converge the stream structurally
-	 * (`materializeGhostStream`) before reaching here, so classification only
-	 * ever sees complete units.
+	 * (`resumeReattachedChild`). A new input reaches here after
+	 * `materializeGhostStream`, and harness recovery brings a resumed input
+	 * to rest, so classification only ever sees complete units.
 	 *
 	 * Returns true when harness recovery settled the running submission
 	 * through Flue's ledger; then no model turn runs here.
@@ -6705,9 +6532,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * Resume a reattached subagent (recovery only) to completion, returning its
 	 * final assistant text for the parent's `task` outcome. Runs in the child's
 	 * own operation so child-internal events stay on the child context; inherits
-	 * the parent's deadline; converges any interrupted partial stream (D-A,
-	 * identical to top-level recovery) before classifying and continuing from the
-	 * child's durable input. Idempotent: an already-completed child resumes as a
+	 * the parent's deadline; harness recovery brings an interrupted partial
+	 * stream to rest (identical to top-level recovery) before classifying and
+	 * continuing from the child's durable input. Idempotent: an already-completed child resumes as a
 	 * no-op and returns its recorded text.
 	 */
 	private resumeReattachedChild(options: {
@@ -6734,13 +6561,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 							thinkingLevel: undefined,
 						},
 						async () => {
-							// Child records carry no submission identity, and child
-							// conversations never receive settle records, so reattach
-							// converges its own ghost (scoped to unowned state) before
-							// the shared resume path classifies and, when the partial
-							// has content, upgrades it to a stream continuation.
-							const harnessRecovers = this.harnessHost !== undefined;
-							if (!harnessRecovers) await this.materializeGhostStream({ submissionId: undefined });
+							// The harness recovers the child's input: its `recover` hook
+							// brings a cut turn to rest.
 							const conversation = await this.requireConversation();
 							// A task conversation's first user message is its single durable
 							// input (the original task prompt); resume continues from there.
@@ -6754,7 +6576,7 @@ export class Session implements FlueSession, AgentSubmissionSession {
 								inputEntryId: inputEntry.id,
 								errorLabel: 'task',
 								signal,
-								harnessRecovers,
+								harnessRecovers: true,
 							});
 							return this.getAssistantText();
 						},
@@ -6821,9 +6643,9 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						this.conversationId,
 						options.inputEntryId,
 					);
-					// On the durable path, the harness recovers a resumed input: its
-					// `recover` hook writes these repairs (see `recordRecoveredTurn`).
-					const harnessRecovers = this.harnessHost !== undefined && inputAlreadyPersisted;
+					// The harness recovers a resumed input: its `recover` hook writes
+					// these repairs (see `recordRecoveredTurn`).
+					const harnessRecovers = inputAlreadyPersisted;
 					if (!harnessRecovers) await this.materializeGhostStream('any');
 					if (!inputAlreadyPersisted) {
 						// A genuinely new input: this submission is about to drive the
@@ -6840,12 +6662,10 @@ export class Session implements FlueSession, AgentSubmissionSession {
 						const parentId = await this.conversationWriter.getConversationLeaf(this.conversationId);
 						const inputRecord = await options.createCanonicalInput(parentId);
 						await this.appendCanonical([inputRecord]);
-						if (this.harnessHost) {
-							this.pendingHarnessInput = {
-								entryId: options.inputEntryId,
-								isSignal: inputRecord.type === 'signal',
-							};
-						}
+						this.pendingHarnessInput = {
+							entryId: options.inputEntryId,
+							isSignal: inputRecord.type === 'signal',
+						};
 					}
 					await this.rebuildCanonicalContext();
 					await options.onInputApplied?.(durability);
@@ -7046,70 +6866,11 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * Drive the agent loop through one or more turns until the LLM either calls
 	 * the `finish` tool (success) or the `give_up` tool (typed error).
 	 *
-	 * If a turn ends with neither tool called, we send a brief reminder and
-	 * loop. There is no retry cap from the framework's perspective: the model has a
-	 * clear escape hatch via `give_up`, the user has cancellation via `signal`,
-	 * and pi-agent-core has its own iteration limits as the final ceiling.
-	 * `MAX_FOLLOWUPS` is a defense-in-depth ceiling against pathological loops.
-	 *
+	 * One harness turn. While the outcome waits, the harness `beforeFinish`
+	 * sends the reminder as an ephemeral message (see `harnessBeforeFinish`),
+	 * so the transcript and the log never keep it.
 	 */
 	private async runWithResultTools<T>(
-		initialPrompt: string,
-		initialImages: ImageContent[],
-		bundle: ResultToolBundle<T>,
-		errorLabel: string,
-		signal: AbortSignal,
-	): Promise<T> {
-		if (this.harnessHost) {
-			return this.runWithResultToolsOnHarness(
-				initialPrompt,
-				initialImages,
-				bundle,
-				errorLabel,
-				signal,
-			);
-		}
-		for (let attempt = 0; attempt <= MAX_RESULT_FOLLOWUPS; attempt++) {
-			if (signal.aborted) throw abortErrorFor(signal);
-			await this.runModelTurnWithRecovery({
-				start: () =>
-					this.agentLoop.prompt(
-						attempt === 0 ? initialPrompt : buildResultFollowUpPrompt(),
-						attempt === 0 ? initialImages : undefined,
-					),
-				// The reminder is never persisted (the session only persists
-				// assistant-role messages), so a context rebuild during recovery
-				// drops it; the initial prompt is canonical and continues fine.
-				...(attempt > 0
-					? {
-							restart: () => this.agentLoop.prompt(buildResultFollowUpPrompt()),
-						}
-					: {}),
-				signal,
-			});
-			this.throwIfError(errorLabel);
-
-			const outcome = bundle.getOutcome();
-			if (outcome.type === 'finished') {
-				return outcome.value;
-			}
-			if (outcome.type === 'gave_up') {
-				throw new ResultUnavailableError(outcome.reason, this.getAssistantText());
-			}
-		}
-		throw new ResultUnavailableError(
-			`Agent did not call \`finish\` or \`give_up\` after ${MAX_RESULT_FOLLOWUPS + 1} attempts.`,
-			this.getAssistantText(),
-		);
-	}
-
-	/**
-	 * {@link runWithResultTools} on the durable path: one harness turn. While
-	 * the outcome waits, the harness `beforeFinish` sends the reminder as an
-	 * ephemeral message (see `harnessBeforeFinish`), so the transcript and
-	 * the log never keep it.
-	 */
-	private async runWithResultToolsOnHarness<T>(
 		initialPrompt: string,
 		initialImages: ImageContent[],
 		bundle: ResultToolBundle<T>,

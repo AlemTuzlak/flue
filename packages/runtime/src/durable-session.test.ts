@@ -2,7 +2,6 @@ import { logMessageStore } from '@tanstack/ai-harness';
 import { describe, expect, it } from 'vitest';
 import { createFlueContext } from './client.ts';
 import type { HarnessLogRecord } from './conversation-records.ts';
-import { buildConversationContext } from './conversation-reducer.ts';
 import { ConversationRecordWriter } from './conversation-writer.ts';
 import { useModel, usePersistentState, useTool } from './index.ts';
 import type { AgentMessage } from './llm-types.ts';
@@ -110,13 +109,6 @@ async function runSubmission(durable: boolean) {
 	return { streams, writer, conversationId, submissionId: input.submissionId };
 }
 
-/** The history of the conversation as the reducer rebuilds it: role and text of each message. */
-async function storedHistory(writer: ConversationRecordWriter, conversationId: string) {
-	const conversation = await writer.getConversation(conversationId);
-	if (!conversation) throw new Error('The conversation is missing.');
-	return buildConversationContext(conversation).map(summarize);
-}
-
 function summarize(message: AgentMessage) {
 	if (message.role === 'signal') return { role: message.role, text: message.content };
 	if (typeof message.content === 'string') return { role: message.role, text: message.content };
@@ -156,23 +148,7 @@ async function harnessBatches(streams: ConversationStreamStore) {
 	return page.batches.map((batch) => harnessLogRecordsOf(batch.records));
 }
 
-const expectedHistory = [
-	{ role: 'user', text: 'How many items?' },
-	{ role: 'assistant', text: 'call count call_1' },
-	{ role: 'toolResult', text: '"counted"' },
-	{ role: 'assistant', text: 'There are 3 items.' },
-];
-
 describe('a Flue session on the instance harness host', () => {
-	it('keeps the same Flue history as a session without a host', async () => {
-		const today = await runSubmission(false);
-		const durable = await runSubmission(true);
-
-		expect(await storedHistory(today.writer, today.conversationId)).toEqual(expectedHistory);
-		expect(await storedHistory(durable.writer, durable.conversationId)).toEqual(expectedHistory);
-		expect((await durable.writer.loadReducedState()).state.get('count')).toBe(3);
-	});
-
 	it('runs the conversation as a harness thread with the same messages', async () => {
 		const { streams, conversationId, submissionId } = await runSubmission(true);
 

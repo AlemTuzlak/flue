@@ -215,11 +215,6 @@ export interface SubmissionJoinSource {
  */
 export interface AgentSubmissionSession {
 	readonly conversationId: string;
-	/**
-	 * True when the session runs on the durable harness host: the harness
-	 * `recover` hook decides an interrupted submission whose input applied.
-	 */
-	readonly recoversThroughHarness?: boolean;
 	inspectSubmissionInput(
 		input: AgentSubmissionInput,
 	): Promise<AgentSubmissionInspection> | AgentSubmissionInspection;
@@ -608,14 +603,10 @@ export async function reconcileInterruptedSubmission(
 	// contradictory interruption advisory over) work that already completed.
 	const ctx = createContext(input.submissionId);
 	let state: AgentSubmissionInspection;
-	let recoversThroughHarness = false;
 	try {
-		const inspection = await createAgentSubmissionSessionHandler(agent, input, async (s) => ({
-			state: await s.inspectSubmissionInput(input),
-			recoversThroughHarness: s.recoversThroughHarness === true,
-		}))(ctx);
-		state = inspection.state;
-		recoversThroughHarness = inspection.recoversThroughHarness;
+		state = await createAgentSubmissionSessionHandler(agent, input, (s) =>
+			s.inspectSubmissionInput(input),
+		)(ctx);
 	} catch (renderError) {
 		// A throwing render (e.g. a failing sandbox factory) never consumes an
 		// attempt or reaches the timeout check, so the submission used to retry
@@ -637,37 +628,17 @@ export async function reconcileInterruptedSubmission(
 		}
 		throw renderError;
 	}
-	// On the durable path, the harness has the applied input. The replacement
-	// attempt opens the session, and the harness `recover` hook decides it by
-	// the rules below (see `decideRecoveredSubmission`), so they run once.
-	// An absent input never reached the harness: it takes the path below.
-	if (recoversThroughHarness && state !== 'absent') {
+	// The harness has the applied input. The replacement attempt opens the
+	// session, and the harness `recover` hook decides it by Flue's rules
+	// (see `decideRecoveredSubmission`), so they run once. An absent input
+	// never reached the harness: it takes the path below.
+	if (state !== 'absent') {
 		const replacement = await submissions.replaceSubmissionAttempt(
 			attempt,
 			generateAttemptId(),
 			lease,
 		);
 		return replacement?.attemptId ? replacement : undefined;
-	}
-	if (state === 'completed') {
-		await settleJoinedSubmissions(
-			submissions,
-			attempt,
-			ctx,
-			'completed',
-			undefined,
-			conversationWriter,
-		);
-		await settleSubmissionWithRecord(
-			submissions,
-			submission.kind,
-			attempt,
-			ctx,
-			'completed',
-			undefined,
-			conversationWriter,
-		);
-		return undefined;
 	}
 
 	// Abort requested before the owner could settle (it crashed, or the abort
@@ -704,18 +675,12 @@ export async function reconcileInterruptedSubmission(
 			attempt,
 			agent,
 			'exhausted_retry_budget',
-			(interruptedTools) =>
-				state === 'absent'
-					? new SubmissionInterruptedError({
-							phase: 'retry_exhausted_before_input',
-							attemptCount: submission.attemptCount,
-							maxAttempts: submission.maxAttempts,
-						})
-					: new SubmissionRetryExhaustedError({
-							attemptCount: submission.attemptCount,
-							maxAttempts: submission.maxAttempts,
-							...(interruptedTools ? { interruptedTools } : {}),
-						}),
+			() =>
+				new SubmissionInterruptedError({
+					phase: 'retry_exhausted_before_input',
+					attemptCount: submission.attemptCount,
+					maxAttempts: submission.maxAttempts,
+				}),
 			createContext,
 			conversationWriter,
 			emitCoordinatorEvent,
@@ -739,27 +704,6 @@ export async function reconcileInterruptedSubmission(
 		return undefined;
 	}
 
-	// Interrupted: acquire the replacement attempt (the fencing CAS) and hand
-	// the submission back to resume processing. No repair happens here, and
-	// none is conditional on how the interruption looked when inspected:
-	// resume entry converges the stream structurally
-	// (`materializeGhostStream` — any in-progress assistant the dead attempt
-	// persisted, including a zero-block start, is materialized as an aborted
-	// entry, unconditionally and idempotently), then classifies the durable
-	// evidence and runs the right continuation:
-	//   - a materialized partial with content is upgraded to a stream
-	//     continuation (`upgradeAbortedPartialToContinuation`);
-	//   - an incomplete tool batch — partial OR zero-result — is repaired by
-	//     `repairTrailingPartialToolBatch`, which writes explicit
-	//     unknown-outcome errors and NEVER re-executes a tool.
-	// Because the CAS precedes resume, the convergence appends always run
-	// under an attempt that owns the stream; a reconciler that loses the CAS
-	// never mutates session history. The canonical input's presence needs no
-	// operational marker to confirm it — 'interrupted' already means the
-	// input entry is on the active path (the stream is the single truth) —
-	// and a row whose durability was never config-stamped gets stamped by the
-	// resume's own once-only `onInputApplied` write.
-	//
 	// TODO(multi-process): the terminal path (`failInterruptedSubmission`)
 	// still appends the `submission_interrupted` advisory before the
 	// settlement CAS. This is a BOUNDED hazard, deliberately deferred
@@ -792,19 +736,9 @@ export async function reconcileInterruptedSubmission(
 	// host-status check (`reserveSubmissionSettlement` requires the host
 	// `running`) — both shaped by how multi-process ownership will actually
 	// be designed, so building them now would be speculation.
-	if (state === 'interrupted') {
-		const replacement = await submissions.replaceSubmissionAttempt(
-			attempt,
-			generateAttemptId(),
-			lease,
-		);
-		if (!replacement?.attemptId) return undefined;
-		return replacement;
-	}
-
-	// Only 'absent' remains (completed/interrupted handled above): the
-	// canonical input was never persisted — the stream is the single truth
-	// for input application, and entries survive compaction, so absence
+	//
+	// The canonical input was never persisted — the stream is the single
+	// truth for input application, and entries survive compaction, so absence
 	// means the crash landed before the input append. Requeue for a clean
 	// first attempt.
 	await submissions.requeueSubmission(attempt);
@@ -1044,20 +978,10 @@ export async function processSubmission(opts: ProcessSubmissionOptions): Promise
 	// Pre-execution abort: a queued submission that was abort-flagged is still
 	// claimed (creating an attempt) so settlement is uniform and
 	// attempt-based; settle it as aborted before running any model work. This
-	// also covers an abort that landed between claim and processing. On the
-	// durable path, an input that applied before is in the harness: the
-	// harness `recover` hook settles it, so the run below goes on.
-	if (
-		persisted.abortRequestedAt !== undefined &&
-		!(
-			persisted.inputAppliedAt !== undefined &&
-			(await createAgentSubmissionSessionHandler(
-				agent,
-				input,
-				(session) => session.recoversThroughHarness === true,
-			)(ctx))
-		)
-	) {
+	// also covers an abort that landed between claim and processing. An input
+	// that applied before is in the harness: the harness `recover` hook
+	// settles it, so the run below goes on.
+	if (persisted.abortRequestedAt !== undefined && persisted.inputAppliedAt === undefined) {
 		await settleAbortedWithContext(
 			submissions,
 			submission,

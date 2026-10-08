@@ -61,11 +61,11 @@ export interface HarnessOptions {
 	conversationWriter: ConversationRecordWriter;
 	attachmentStore: AttachmentStore;
 	/**
-	 * The durable host of the instance. With it, every session this harness
-	 * opens (named sessions, task children, action children) is a thread of
-	 * the host.
+	 * The durable host of the instance. Every session this harness opens
+	 * (named sessions, task children, action children) is a thread of the
+	 * host.
 	 */
-	harnessHost?: InstanceHarnessBinding;
+	harnessHost: InstanceHarnessBinding;
 	executionContext?: FlueExecutionContext;
 	scopeName?: string;
 	scopeDepth?: number;
@@ -147,7 +147,7 @@ export class Harness implements FlueHarness {
 	private mcpUnavailable: McpUnavailableConnection[];
 	private conversationWriter: ConversationRecordWriter;
 	private attachmentStore: AttachmentStore;
-	private harnessHost: InstanceHarnessBinding | undefined;
+	private harnessHost: InstanceHarnessBinding;
 	private executionContext: FlueExecutionContext;
 	private scopeName: string | undefined;
 	private scopeDepth: number;
@@ -319,7 +319,7 @@ export class Harness implements FlueHarness {
 			onClose: () => this.openSessions.delete(sessionName),
 			conversationWriter: this.conversationWriter,
 			attachmentStore: this.attachmentStore,
-			...(this.harnessHost ? { harnessHost: this.harnessHost } : {}),
+			harnessHost: this.harnessHost,
 			executionContext: { ...this.executionContext, harness: harnessScope },
 			hookState: this.hookState,
 			rerender: this.rerender,
@@ -427,7 +427,7 @@ export class Harness implements FlueHarness {
 			scopeSignal: this.scopeAbortController.signal,
 			conversationWriter: this.conversationWriter,
 			attachmentStore: this.attachmentStore,
-			...(this.harnessHost ? { harnessHost: this.harnessHost } : {}),
+			harnessHost: this.harnessHost,
 			executionContext: { ...this.executionContext, harness: harnessScope, taskId: options.taskId },
 		});
 		await session.initializeCanonicalContext();
@@ -488,7 +488,7 @@ export class Harness implements FlueHarness {
 			toolFactory: this.envSlot.toolFactory,
 			conversationWriter: this.conversationWriter,
 			attachmentStore: this.attachmentStore,
-			...(this.harnessHost ? { harnessHost: this.harnessHost } : {}),
+			harnessHost: this.harnessHost,
 			executionContext: options.executionContext,
 			scopeName: nestedScope,
 			scopeDepth: options.depth,

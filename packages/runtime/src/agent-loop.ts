@@ -6,22 +6,18 @@
  * events in pi's order, and the session builds its records and its
  * observations from them.
  *
- * With a durable binding, the loop runs on a thread of the instance host,
- * and the harness transcript is the model context. Without one, the loop
- * runs on an in-memory host, and each model call sends the context that
- * Flue's own transcript (`state.messages`) holds.
+ * The loop runs on a thread of a durable instance host, and the harness
+ * transcript is the model context. Without a binding, the loop makes an
+ * instance host on memory stores.
  */
 import {
 	type AnyTextAdapter,
 	type ChatMiddleware,
 	EventType,
-	type MidConversationChange,
 	type ModelMessage,
 	type StreamChunk,
 } from '@tanstack/ai';
-import { planMidConversationChanges } from '@tanstack/ai/adapter-internals';
 import {
-	createHarnessHost,
 	defineHarness,
 	type FinishContext,
 	type HarnessSession,
@@ -56,7 +52,8 @@ import {
 	toUserInput,
 } from './model-messages.ts';
 import type { FlueModel } from './providers/provider.ts';
-import type { createInstanceHarnessHost } from './runtime/instance-harness-host.ts';
+import { InMemoryConversationStreamStore } from './runtime/conversation-stream-store.ts';
+import { createInstanceHarnessHost } from './runtime/instance-harness-host.ts';
 import { isRetryableModelError } from './submission-state.ts';
 import { type HarnessToolOptions, toHarnessTool } from './tool-bridge.ts';
 
@@ -141,17 +138,17 @@ export interface AgentLoopOptions {
 	prepareNextTurn?(turn: CompletedTurn): Promise<unknown> | unknown;
 	/**
 	 * The durable thread of the loop. Without it, the loop runs on an
-	 * in-memory host, and the model context comes from `state.messages`.
+	 * instance host on memory stores (see {@link inMemoryBinding}).
 	 */
 	durable?: AgentLoopDurableBinding;
 	/**
 	 * How an input that a crashed host left recovers. See `durability.recover`.
-	 * On a durable binding, a turn that runs gets the loop's adapter and
-	 * tools, and {@link AgentLoop.recoverTurns} follows it.
+	 * A turn that runs gets the loop's adapter and tools, and
+	 * {@link AgentLoop.recoverTurns} follows it.
 	 */
 	recover?: RecoverHook;
 	/**
-	 * On a durable binding: runs once the loop opened its thread, before any
+	 * Runs once the loop opened its thread, before any
 	 * input of the loop reaches the harness. A run waits for it. `inputs` are
 	 * the messages of `state.messages` that the run sends to the harness as
 	 * its inputs.
@@ -165,24 +162,24 @@ export interface AgentLoopOptions {
 	 */
 	onJoin?: HarnessTurnOptions['onJoin'];
 	/**
-	 * On a durable binding: runs before the model call that joined inputs
-	 * reach, after the append that joined them, with their input ids.
+	 * Runs before the model call that joined inputs reach, after the
+	 * append that joined them, with their input ids.
 	 */
 	onJoined?(inputIds: readonly string[]): Promise<void>;
 	/**
-	 * On a durable binding: the model stopped calling tools. Return records
+	 * The model stopped calling tools. Return records
 	 * or ephemeral messages to send the model back to work in the same turn.
 	 * An ephemeral message reaches every later model call of the run, at the
 	 * place where it first went out.
 	 */
 	beforeFinish?(ctx: FinishContext): Promise<TurnAdditions | undefined>;
 	/**
-	 * On a durable binding: runs before each model call with the harness
+	 * Runs before each model call with the harness
 	 * transcript. A list it returns replaces the transcript (a compaction).
 	 */
 	rewriteContext?(messages: readonly ModelMessage[]): Promise<ModelMessage[] | undefined>;
 	/**
-	 * What a failed model call does. The default on a durable binding is
+	 * What a failed model call does. The default with a `durable` binding is
 	 * {@link retryModelErrors}. Without a binding, a failed call ends the run.
 	 */
 	onModelError?: HarnessTurnOptions['onModelError'];
@@ -247,6 +244,21 @@ export const STREAM_RECOVERY_SIGNALS = [
 const STREAM_RECOVERY_NOTES = STREAM_RECOVERY_SIGNALS.map(({ type, content }) =>
 	renderSignalMessage({ role: 'signal', type, content, timestamp: 0 }),
 );
+
+/** A thread on an instance host of its own, on memory stores. */
+function inMemoryBinding(threadId: string) {
+	const path = 'flue/agent-loop';
+	return {
+		host: createInstanceHarnessHost({
+			streams: new InMemoryConversationStreamStore(),
+			path,
+			identity: { agentName: 'agent', instanceId: threadId },
+			ownerId: 'agent-loop',
+		}),
+		threadId,
+		logId: path,
+	};
+}
 
 function createInputId() {
 	return `flue:${crypto.randomUUID()}`;
@@ -348,8 +360,6 @@ interface LoopRun {
 	/** Steers sent to the harness that it has not stored yet. */
 	admissions: Promise<unknown>[];
 	adapter: AnyTextAdapter | undefined;
-	/** The mid-conversation record of the model call in flight. */
-	midConversationChange: MidConversationChange | undefined;
 	/** Messages for the next model call: the steered ones and the prompt's queue. */
 	pending: AgentMessage[];
 	firstCall: boolean;
@@ -391,13 +401,7 @@ export class AgentLoop {
 	/** One event at a time, in emit order, as pi awaited each listener. */
 	private emitting: Promise<void> = Promise.resolve();
 	private harnessSession: Promise<HarnessSession> | undefined;
-	/**
-	 * The mid-conversation record of each assistant message: the tools and
-	 * prompts its call declared. TanStack plans tool and prompt changes from
-	 * these records. Kept in memory, as pi kept its transcript's tool
-	 * declarations; a rebuilt context starts from the current set.
-	 */
-	private readonly midConversationChanges = new WeakMap<AgentMessage, MidConversationChange>();
+	private readonly durable: AgentLoopDurableBinding;
 	private readonly harnessTools = new WeakMap<AgentTool, ReturnType<typeof toHarnessTool>>();
 	/** Steered messages sent to the harness, by input id, until they join a model call. */
 	private readonly joining = new Map<string, AgentMessage>();
@@ -405,6 +409,7 @@ export class AgentLoop {
 	private recovered: string[] = [];
 
 	constructor(private readonly options: AgentLoopOptions) {
+		this.durable = options.durable ?? inMemoryBinding(options.sessionId);
 		let tools = options.initialState.tools.slice();
 		let messages = options.initialState.messages?.slice() ?? [];
 		const lead = createInitialSystemMessage(
@@ -443,13 +448,13 @@ export class AgentLoop {
 	}
 
 	/**
-	 * Queue a message for the next model call of the running turn. On a
-	 * durable binding, a steer during a run goes to the harness as an input
-	 * with `busy: 'steer'`, and joins the next model call.
+	 * Queue a message for the next model call of the running turn. A steer
+	 * during a run goes to the harness as an input with `busy: 'steer'`, and
+	 * joins the next model call.
 	 */
 	steer(message: AgentMessage, options: { inputId?: string } = {}) {
 		const run = this.run;
-		if (this.options.durable && run) {
+		if (run) {
 			this.sendSteer(run, message, options.inputId ?? createInputId());
 			return;
 		}
@@ -493,14 +498,11 @@ export class AgentLoop {
 				: input;
 		const [first, ...rest] = messages;
 		if (!first) throw new Error('No messages to prompt with');
-		const durable = this.options.durable;
-		// The harness takes one message per input. On a binding, the others join as steers.
-		if (durable) this.steering.unshift(...rest.map((message) => ({ message, inputId: undefined })));
-		// Without a binding, the context comes from `state.messages`, so any message can open the turn.
-		const isInput = durable || first.role === 'user' || first.role === 'signal';
-		await this.runLoop(durable ? [first] : messages, false, {
+		// The harness takes one message per input. The others join as steers.
+		this.steering.unshift(...rest.map((message) => ({ message, inputId: undefined })));
+		await this.runLoop([first], {
 			kind: 'prompt',
-			message: isInput ? toUserInput(first) : 'Continue.',
+			message: toUserInput(first),
 			inputId: options.inputId ?? createInputId(),
 			...(options.ephemeral ? { ephemeral: options.ephemeral } : {}),
 		});
@@ -514,30 +516,17 @@ export class AgentLoop {
 		if (!last || messages.every((message) => message.role === 'system'))
 			throw new Error('No messages to continue from');
 		if (last.role === 'assistant') {
-			const queued = this.drainSteering();
-			const [first, ...rest] = queued;
+			const [first, ...rest] = this.drainSteering();
 			if (!first) throw new Error('Cannot continue from message role: assistant');
-			if (this.options.durable) {
-				this.steering.unshift(...rest);
-				await this.runLoop([first.message], false, {
-					kind: 'prompt',
-					message: toUserInput(first.message),
-					inputId: first.inputId ?? createInputId(),
-				});
-				return;
-			}
-			await this.runLoop(
-				queued.map((steer) => steer.message),
-				true,
-				this.legacyContinueInput(),
-			);
+			this.steering.unshift(...rest);
+			await this.runLoop([first.message], {
+				kind: 'prompt',
+				message: toUserInput(first.message),
+				inputId: first.inputId ?? createInputId(),
+			});
 			return;
 		}
-		if (this.options.durable) {
-			await this.continueTurn();
-			return;
-		}
-		await this.runLoop([], false, this.legacyContinueInput());
+		await this.continueTurn();
 	}
 
 	/**
@@ -547,7 +536,7 @@ export class AgentLoop {
 	 */
 	async continueTurn(options: AgentLoopInputOptions = {}) {
 		this.assertIdle('Agent is already processing. Wait for completion before continuing.');
-		await this.runLoop([], false, {
+		await this.runLoop([], {
 			kind: 'continue',
 			inputId: options.inputId ?? createInputId(),
 			...(options.ephemeral ? { ephemeral: options.ephemeral } : {}),
@@ -555,14 +544,14 @@ export class AgentLoop {
 	}
 
 	/**
-	 * On a durable binding: open the thread, and follow the turns that
+	 * Open the thread, and follow the turns that
 	 * recovery runs there (the inputs a stopped host left), with the loop's
 	 * events. Resolves when they ended. With no such turn, the run ends with
 	 * no model call.
 	 */
 	async recoverTurns() {
 		this.assertIdle('Agent is already processing. Wait for completion before recovering.');
-		await this.runLoop([], false, { kind: 'recover' });
+		await this.runLoop([], { kind: 'recover' });
 	}
 
 	/**
@@ -575,7 +564,7 @@ export class AgentLoop {
 	}
 
 	/**
-	 * In the `recover` hook of a durable binding: the recovered turn runs the
+	 * In the `recover` hook: the recovered turn runs the
 	 * calls of `assistant` again that have no outcome in `outcomes`. The batch
 	 * then ends with the loop's events, as a live batch does. Each call in
 	 * `outcomes` keeps its outcome and does not run.
@@ -595,15 +584,6 @@ export class AgentLoop {
 
 	private assertIdle(message: string) {
 		if (this.active) throw new Error(message);
-	}
-
-	/**
-	 * A continue without a binding. Its context comes from `state.messages`,
-	 * which the harness transcript does not hold, so it opens the turn with a
-	 * prompt, as the harness transcript can end with an answer.
-	 */
-	private legacyContinueInput(): RunInput {
-		return { kind: 'prompt', message: 'Continue.', inputId: createInputId() };
 	}
 
 	private drainSteering() {
@@ -635,7 +615,7 @@ export class AgentLoop {
 		}
 	}
 
-	private async runLoop(initial: AgentMessage[], skipInitialPoll: boolean, input: RunInput) {
+	private async runLoop(initial: AgentMessage[], input: RunInput) {
 		const controller = new AbortController();
 		const done = Promise.withResolvers<void>();
 		this.active = { promise: done.promise, controller };
@@ -645,7 +625,6 @@ export class AgentLoop {
 			started: Promise.withResolvers<void>(),
 			admissions: [],
 			adapter: undefined,
-			midConversationChange: undefined,
 			pending: [],
 			firstCall: true,
 			lastTurn: undefined,
@@ -664,11 +643,8 @@ export class AgentLoop {
 			await this.emit({ type: 'agent_start' });
 			await this.emit({ type: 'turn_start' });
 			for (const message of initial) await this.emitMessage(message);
-			const queued = skipInitialPoll ? [] : this.drainSteering();
-			if (this.options.durable)
-				for (const steer of queued)
-					this.sendSteer(run, steer.message, steer.inputId ?? createInputId());
-			else run.pending = queued.map((steer) => steer.message);
+			for (const steer of this.drainSteering())
+				this.sendSteer(run, steer.message, steer.inputId ?? createInputId());
 			await this.runTurn(run, input);
 			if (run.failure) throw run.failure.error;
 			await this.emit({ type: 'agent_end', messages: run.newMessages });
@@ -764,7 +740,7 @@ export class AgentLoop {
 	}
 
 	/**
-	 * The harness `recover` on a durable binding. The `recover` option
+	 * The harness `recover`. The `recover` option
 	 * decides first. A turn that runs gets the loop's adapter, and the loop
 	 * follows it (see {@link recoverTurns}).
 	 */
@@ -797,44 +773,36 @@ export class AgentLoop {
 		return opening;
 	}
 
-	/** Open the loop's thread, and run the `onOpen` option on a durable binding. */
+	/** Open the loop's thread, and run the `onOpen` option. */
 	private async openSession() {
 		const session = await this.openThread();
-		if (this.options.durable) await this.options.onOpen?.(session, this.run?.newMessages ?? []);
+		await this.options.onOpen?.(session, this.run?.newMessages ?? []);
 		return session;
 	}
 
-	/** The loop's thread: on the durable host of the binding, or on an in-memory host. */
+	/** The loop's thread on the durable host of the binding. */
 	private openThread() {
-		const durable = this.options.durable;
-		const host = durable?.host ?? createHarnessHost();
+		const { host, threadId, logId } = this.durable;
 		const { canJoin, onModelError } = this.options;
-		const modelErrors = onModelError ?? (durable ? retryModelErrors : undefined);
+		const modelErrors = onModelError ?? (this.options.durable ? retryModelErrors : undefined);
 		const harness = defineHarness({
 			name: 'flue/session',
 			middleware: [this.middleware()],
 			// pi's loop had no iteration limit.
 			agentLoopStrategy: () => true,
 			durability: {
-				// On a durable binding, Flue's submission ledger decides a
-				// recovered input in the `recover` hook, by its own attempt
-				// budget and deadline. The harness limits never decide first:
-				// no attempt limit, and no time limit (which would also abort
-				// a live turn).
-				...(durable
-					? { maxAttempts: Number.MAX_SAFE_INTEGER }
-					: { maxAttempts: 10, timeoutMs: 3_600_000 }),
+				// Flue's submission ledger decides a recovered input in the
+				// `recover` hook, by its own attempt budget and deadline. The
+				// harness limits never decide first: no attempt limit, and no
+				// time limit (which would also abort a live turn).
+				maxAttempts: Number.MAX_SAFE_INTEGER,
 				// A cut answer keeps its calls; each gets this error result, and the model goes on.
 				truncatedToolResult: ({ toolName }) => truncatedCallText(toolName),
 				// A cut `replay: 'never'` call gets Flue's interrupted marker.
 				interruptedToolResult: INTERRUPTED_TOOL_RESULT,
 				// A cut answer goes on after Flue's two recovery signals.
 				continueCutOff: { note: STREAM_RECOVERY_NOTES },
-				...(durable
-					? { recover: (ctx: RecoverContext) => this.recoverInput(ctx) }
-					: this.options.recover
-						? { recover: this.options.recover }
-						: {}),
+				recover: (ctx: RecoverContext) => this.recoverInput(ctx),
 			},
 			turn: {
 				beforeFinish: (ctx) => this.beforeFinish(ctx),
@@ -844,12 +812,7 @@ export class AgentLoop {
 				...(modelErrors ? { onModelError: modelErrors } : {}),
 			},
 		});
-		return host.open(
-			harness,
-			durable
-				? { threadId: durable.threadId, logId: durable.logId }
-				: { threadId: this.options.sessionId },
-		);
+		return host.open(harness, { threadId, logId });
 	}
 
 	/** Inputs joined the running turn: their messages go out before its next model call. */
@@ -913,9 +876,9 @@ export class AgentLoop {
 	}
 
 	/**
-	 * Before each model call: the loop's events, and Flue's request. On a
-	 * binding, the call's messages (the harness transcript, with the joined
-	 * steers) are the context. Without one, Flue's transcript is.
+	 * Before each model call: the loop's events, and Flue's request. The
+	 * call's messages (the harness transcript, with the joined steers) are
+	 * the context.
 	 */
 	private async beforeModelCall(
 		run: LoopRun,
@@ -955,7 +918,7 @@ export class AgentLoop {
 		const request = toModelRequest(
 			{
 				systemPrompt: this.state.systemPrompt,
-				messages: this.options.durable ? [] : this.state.messages,
+				messages: [],
 				tools: tools.map(toToolDeclaration),
 			},
 			info,
@@ -969,41 +932,28 @@ export class AgentLoop {
 			reasoning: { level: thinkingLevel, summary: true },
 		};
 		// TanStack keeps the mid-conversation record of each stored assistant message itself.
-		if (this.options.durable) {
-			const rewritten = await this.options.rewriteContext?.(transcript);
-			if (rewritten) {
-				this.placeReminders(run, rewritten.length);
-				return {
-					...perCall,
-					messages: rewritten,
-					providerMessages: this.withReminders(
-						run,
-						toModelContext(rewritten, info),
-						rewritten.length,
-					),
-				};
-			}
-			this.placeReminders(run, transcript.length);
+		const rewritten = await this.options.rewriteContext?.(transcript);
+		if (rewritten) {
+			this.placeReminders(run, rewritten.length);
 			return {
 				...perCall,
+				messages: rewritten,
 				providerMessages: this.withReminders(
 					run,
-					toModelContext(callMessages, info),
-					transcript.length,
+					toModelContext(rewritten, info),
+					rewritten.length,
 				),
 			};
 		}
-		const providerMessages = this.withMidConversationChanges(request.messages);
-		const channels = run.adapter?.midConversationChannels;
-		run.midConversationChange =
-			channels?.tools || channels?.systemPrompts
-				? planMidConversationChanges({
-						messages: providerMessages,
-						toolNames: tools.map((tool) => tool.name),
-						systemPrompts: request.systemPrompts,
-					}).record
-				: undefined;
-		return { ...perCall, providerMessages };
+		this.placeReminders(run, transcript.length);
+		return {
+			...perCall,
+			providerMessages: this.withReminders(
+				run,
+				toModelContext(callMessages, info),
+				transcript.length,
+			),
+		};
 	}
 
 	private async modelChunk(run: LoopRun, chunk: StreamChunk) {
@@ -1030,22 +980,7 @@ export class AgentLoop {
 		await this.finishAssistant(run, assembler.finish());
 	}
 
-	/** The request messages with each assistant's mid-conversation record, as `chat()` keeps them. */
-	private withMidConversationChanges(messages: ModelMessage[]) {
-		const assistants = this.state.messages.filter((message) => message.role === 'assistant');
-		let index = 0;
-		return messages.map((message) => {
-			if (message.role !== 'assistant') return message;
-			const source = assistants[index++];
-			const change = source && this.midConversationChanges.get(source);
-			return change ? { ...message, midConversationChange: change } : message;
-		});
-	}
-
 	private async finishAssistant(run: LoopRun, message: AssistantMessage) {
-		if (run.midConversationChange)
-			this.midConversationChanges.set(message, run.midConversationChange);
-		run.midConversationChange = undefined;
 		await this.emit({ type: 'message_end', message });
 		run.newMessages.push(message);
 		if (message.stopReason === 'error' || message.stopReason === 'aborted') {
@@ -1250,25 +1185,17 @@ export class AgentLoop {
 	}
 
 	/**
-	 * The model stopped calling tools. Without a binding: continue the same
-	 * run while steered messages wait. On a binding, the harness itself joins
-	 * a steer that waits after the answer, and the `beforeFinish` option
-	 * decides.
+	 * The model stopped calling tools. The harness itself joins a steer that
+	 * waits after the answer, and the `beforeFinish` option decides.
 	 */
 	private async beforeFinish(ctx: FinishContext) {
 		const run = this.run;
 		if (!run || run.stopped || run.failure || run.signal.aborted) return undefined;
-		if (this.options.durable) {
-			const beforeFinish = this.options.beforeFinish;
-			if (!beforeFinish) return undefined;
-			const added = await this.guard(run, () => beforeFinish(ctx));
-			if (added?.ephemeral?.length)
-				run.reminders.push({ messages: added.ephemeral, at: undefined });
-			return added;
-		}
-		// pi polled the steering queue once, after `turn_end`.
-		if (run.pending.length === 0) return undefined;
-		return { messages: [{ role: 'user' as const, content: 'Continue.' }] };
+		const beforeFinish = this.options.beforeFinish;
+		if (!beforeFinish) return undefined;
+		const added = await this.guard(run, () => beforeFinish(ctx));
+		if (added?.ephemeral?.length) run.reminders.push({ messages: added.ephemeral, at: undefined });
+		return added;
 	}
 
 	/**
