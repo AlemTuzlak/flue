@@ -88,10 +88,14 @@ export interface NodeAgentCoordinator {
 	 */
 	waitForIdle(): Promise<void>;
 	/**
-	 * Graceful shutdown. Stops accepting new work, aborts active submissions
-	 * at the turn boundary, and waits for settlement with a timeout. Submissions
-	 * that don't settle within the timeout are abandoned — their expired leases
-	 * will be reclaimed on next startup via {@link reconcileSubmissions}.
+	 * Graceful shutdown. Stops accepting new work and waits for the claim loop
+	 * to exit. Then it closes each instance harness host with
+	 * `{ recoverable: true }`, so running turns stop with no settlement, and
+	 * aborts the active sessions. It waits up to `timeoutMs` (default 30000)
+	 * for the active submission tasks to finish, then stops the heartbeat and
+	 * closes the cached MCP connections. Shutdown does not settle the stopped
+	 * submissions. They stay `running`, so the next startup reclaims them via
+	 * {@link reconcileSubmissions} and continues the stopped turns.
 	 */
 	shutdown(timeoutMs?: number): Promise<void>;
 }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { projectAgentConversationBatch, projectAgentConversationSnapshot } from './conversation-public.ts';
+import {
+	projectAgentConversationBatch,
+	projectAgentConversationSnapshot,
+} from './conversation-public.ts';
 import type { ConversationRecord } from './conversation-records.ts';
 import { createReducedInstanceState, reduceConversationRecords } from './conversation-reducer.ts';
 import { replyFromSnapshot } from './runtime/conversation-observer.ts';

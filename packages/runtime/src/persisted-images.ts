@@ -3,8 +3,7 @@ import type { AgentSubmissionInput } from './runtime/agent-submissions.ts';
 import { MAX_IMAGE_DATA_LENGTH } from './runtime/schemas.ts';
 import type { PromptDocument, PromptImage } from './types.ts';
 
-export { MAX_IMAGE_DATA_LENGTH };
-export const IMAGE_DATA_CHUNK_LENGTH = 256 * 1024;
+const IMAGE_DATA_CHUNK_LENGTH = 256 * 1024;
 
 const markerPrefix = '__flue_submission_chunks__:';
 

@@ -31,7 +31,6 @@
 		"build": "tsdown",
 		"check:types": "tsc --noEmit",
 		"test": "vitest run",
-		"test:integration:cloudflare": "vitest run --config vitest.integration.cloudflare.config.ts --no-file-parallelism",
 		"test:watch": "vitest"
 	},
 	"dependencies": {
@@ -46,7 +45,6 @@
 		"vite": "^8.0.0"
 	},
 	"devDependencies": {
-		"@cloudflare/vite-plugin": "^1.39.2",
 		"@tanstack/ai": "https://pkg.pr.new/TanStack/ai/@tanstack/ai@7b549412f74dd3dff68039bb66b2a138ae6025b8",
 		"hono": "^4.12.32",
 		"tsdown": "^0.22.7",

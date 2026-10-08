@@ -66,7 +66,7 @@ export function isDocumentContextBlock(block: unknown): block is DocumentContext
 }
 
 /** Reject unsupported document MIME types on the in-code operation surface. */
-export function assertSupportedDocuments(documents: readonly PromptDocument[] | undefined): void {
+function assertSupportedDocuments(documents: readonly PromptDocument[] | undefined): void {
 	for (const document of documents ?? []) {
 		if (!isDocumentMimeType(document.mimeType)) {
 			throw new Error(
