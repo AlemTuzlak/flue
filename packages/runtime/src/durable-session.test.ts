@@ -15,7 +15,7 @@ import {
 } from './runtime/agent-submissions.ts';
 import { InMemoryAttachmentStore } from './runtime/attachment-store.ts';
 import type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
-import { createFlueLogStore } from './runtime/harness-log-store.ts';
+import { createFlueLogStore, harnessLogRecordsOf } from './runtime/harness-log-store.ts';
 import {
 	createHostRecordAppend,
 	createInstanceHarnessHost,
@@ -153,13 +153,7 @@ async function storedTranscript(streams: ConversationStreamStore, threadId: stri
 /** The records of each harness batch of the instance stream, in order. */
 async function harnessBatches(streams: ConversationStreamStore) {
 	const page = await streams.read(path);
-	const batches: HarnessLogRecord[][] = [];
-	for (const batch of page.batches) {
-		for (const record of batch.records) {
-			if (record.type === 'harness_log_batch') batches.push(record.records);
-		}
-	}
-	return batches;
+	return page.batches.map((batch) => harnessLogRecordsOf(batch.records));
 }
 
 const expectedHistory = [

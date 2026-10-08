@@ -176,13 +176,20 @@ function harnessNoise(seq: number): HarnessLogRecord[] {
 	];
 }
 
-/** The same Flue records, each batch written as one harness append with the harness's `thread` field. */
+/**
+ * The same Flue records, each batch written as one harness append: the Flue
+ * records at the top level, then the harness batch with a slot for each.
+ */
 function asHarnessBatches(batches: ConversationRecord[][]) {
 	let seq = 1;
 	return batches.map((records, index) => {
 		const inner: HarnessLogRecord[] = [
 			...harnessNoise(index),
-			...records.map((record) => ({ ...record, thread: logId })),
+			...records.map((_record, slot) => ({
+				type: 'harness.flue_record',
+				index: slot,
+				thread: logId,
+			})),
 		];
 		const batch: HarnessLogBatchRecord = {
 			v: 1,
@@ -196,7 +203,7 @@ function asHarnessBatches(batches: ConversationRecord[][]) {
 			records: inner,
 		};
 		seq += inner.length;
-		return [batch];
+		return [...records, batch];
 	});
 }
 
@@ -231,13 +238,17 @@ describe('a stream that moves to harness batches', () => {
 });
 
 describe('flueRecordsOf', () => {
-	it('gives the Flue records of a harness batch in order, without the harness fields and records', () => {
-		const [[batch] = []] = asHarnessBatches([
-			[userMessage('entry_user_a', null, 'sub_a', 'Hello.')],
+	it('gives the Flue records of a harness append in order, without its harness batch', () => {
+		const [batch = []] = asHarnessBatches([
+			[
+				userMessage('entry_user_a', null, 'sub_a', 'Hello.'),
+				userMessage('entry_user_b', 'entry_user_a', 'sub_b', 'Again.'),
+			],
 		]);
 
-		expect(flueRecordsOf(batch ? [batch] : [])).toEqual([
+		expect(flueRecordsOf(batch)).toEqual([
 			userMessage('entry_user_a', null, 'sub_a', 'Hello.'),
+			userMessage('entry_user_b', 'entry_user_a', 'sub_b', 'Again.'),
 		]);
 	});
 

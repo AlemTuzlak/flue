@@ -3,7 +3,6 @@ import * as v from 'valibot';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentLoop } from './agent-loop.ts';
 import { createFlueContext } from './client.ts';
-import type { HarnessLogRecord } from './conversation-records.ts';
 import { buildConversationContext } from './conversation-reducer.ts';
 import { ConversationRecordWriter } from './conversation-writer.ts';
 import { useAgentFinish, useModel, useTool } from './index.ts';
@@ -18,7 +17,7 @@ import {
 } from './runtime/agent-submissions.ts';
 import { InMemoryAttachmentStore } from './runtime/attachment-store.ts';
 import type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
-import { createFlueLogStore } from './runtime/harness-log-store.ts';
+import { createFlueLogStore, harnessLogRecordsOf } from './runtime/harness-log-store.ts';
 import {
 	createHostRecordAppend,
 	createInstanceHarnessHost,
@@ -126,13 +125,7 @@ async function storedTranscript(streams: ConversationStreamStore, path: string, 
 /** Every harness log record of the instance stream at `path`, in order. */
 async function harnessRecords(streams: ConversationStreamStore, path: string) {
 	const page = await streams.read(path);
-	const records: HarnessLogRecord[] = [];
-	for (const batch of page.batches) {
-		for (const record of batch.records) {
-			if (record.type === 'harness_log_batch') records.push(...record.records);
-		}
-	}
-	return records;
+	return page.batches.flatMap((batch) => harnessLogRecordsOf(batch.records));
 }
 
 /** A direct submission of `agentName`, admitted and claimed by `attempt-1` of `host-a`. */
@@ -384,9 +377,7 @@ describe('a join on the durable path', () => {
 		]);
 		// The input record of the joined delivery lands in the append that joins it.
 		const joinBatch = (await streams.read(path)).batches
-			.flatMap((batch) => batch.records)
-			.filter((record) => record.type === 'harness_log_batch')
-			.map((record) => record.records)
+			.map((batch) => harnessLogRecordsOf(batch.records))
 			.find((batch) => batch.some((record) => record.type === 'harness.input.joined'));
 		expect(
 			joinBatch
@@ -464,9 +455,7 @@ describe('useAgentFinish on the durable path', () => {
 		).toEqual([[input.submissionId, 'completed']]);
 		// The signal and the cycle record land in one append.
 		const cycleBatch = (await streams.read(path)).batches
-			.flatMap((batch) => batch.records)
-			.filter((record) => record.type === 'harness_log_batch')
-			.map((record) => record.records)
+			.map((batch) => harnessLogRecordsOf(batch.records))
 			.find((batch) => batch.some((record) => record.type === 'agent_finish_cycle'));
 		expect(cycleBatch?.map((record) => record.type)).toEqual(['signal', 'agent_finish_cycle']);
 		// The faux adapter names each answer after its run, and the harness runs

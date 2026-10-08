@@ -14,6 +14,7 @@ import {
 } from './runtime/agent-submissions.ts';
 import { InMemoryAttachmentStore } from './runtime/attachment-store.ts';
 import type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
+import { harnessLogRecordsOf } from './runtime/harness-log-store.ts';
 import {
 	createHostRecordAppend,
 	createInstanceHarnessHost,
@@ -29,6 +30,7 @@ import {
 } from './test-utils/faux.ts';
 
 const instanceId = 'instance-1';
+const LEASE_MS = 60_000;
 
 const INTERRUPTED_TEXT =
 	'{"type":"interrupted","message":"Tool execution was interrupted before completion. The outcome is unknown."}';
@@ -41,10 +43,14 @@ function pathOf(agentName: string) {
 	return `agents/${agentName}/${instanceId}`;
 }
 
-async function openStreams() {
+async function openStores() {
 	const adapter = sqlite();
 	await adapter.migrate?.();
-	return (await adapter.connect()).conversationStreamStore;
+	const connection = await adapter.connect();
+	return {
+		streams: connection.conversationStreamStore,
+		submissions: connection.submissionStore,
+	};
 }
 
 /** A Flue context whose sessions run on a new instance host over `streams`. */
@@ -107,7 +113,7 @@ async function stopAndRecover(options: {
 	});
 	faux.setResponses(options.responses);
 	setProvider(faux.provider);
-	const streams = await openStreams();
+	const { streams, submissions } = await openStores();
 	const a = await hostContext(agentName, streams, 'host-a');
 	const { conversationId } = await ensureInstanceIdentity(a.writer, agent, undefined);
 	const input = await createDirectAgentSubmissionInput({
@@ -115,6 +121,17 @@ async function stopAndRecover(options: {
 		id: instanceId,
 		message: { kind: 'user', body: 'Go.' },
 	});
+	// The stream store takes the records of a submission only from its
+	// current attempt, so the submission has a row that host A claims.
+	await submissions.admitDirect(input);
+	await submissions.markSubmissionCanonicalReady(input.submissionId);
+	const claimed = await submissions.claimSubmission({
+		submissionId: input.submissionId,
+		attemptId: 'attempt-1',
+		ownerId: 'host-a',
+		leaseExpiresAt: Date.now() + LEASE_MS,
+	});
+	if (!claimed) throw new Error('The submission was not claimed.');
 	const runA = runSubmission(agent, input, a.ctx, 'attempt-1').catch(() => undefined);
 	await options.stopPoint(streams);
 	options.onStop?.();
@@ -122,6 +139,12 @@ async function stopAndRecover(options: {
 	await runA;
 
 	const b = await hostContext(agentName, streams, 'host-b');
+	const replaced = await submissions.replaceSubmissionAttempt(
+		{ submissionId: input.submissionId, attemptId: 'attempt-1' },
+		'attempt-2',
+		{ ownerId: 'host-b', leaseExpiresAt: Date.now() + LEASE_MS },
+	);
+	if (!replaced) throw new Error('The submission has no replacement attempt.');
 	await runSubmission(agent, input, b.ctx, 'attempt-2');
 	await b.host.close();
 	const conversation = await b.writer.getConversation(conversationId);
@@ -145,13 +168,7 @@ async function stopAndRecover(options: {
 /** Every harness log record of the instance stream at `path`, in order. */
 async function harnessRecords(streams: ConversationStreamStore, path: string) {
 	const page = await streams.read(path);
-	const records: HarnessLogRecord[] = [];
-	for (const batch of page.batches) {
-		for (const record of batch.records) {
-			if (record.type === 'harness_log_batch') records.push(...record.records);
-		}
-	}
-	return records;
+	return page.batches.flatMap((batch) => harnessLogRecordsOf(batch.records));
 }
 
 /** Resolves when the harness log at `path` has a record that `match` accepts. */

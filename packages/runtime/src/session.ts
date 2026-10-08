@@ -92,7 +92,7 @@ import {
 	toolOutcomeKey,
 	toolResultEntryId,
 } from './conversation-reducer.ts';
-import type { ConversationRecordWriter } from './conversation-writer.ts';
+import type { ConversationAppendOptions, ConversationRecordWriter } from './conversation-writer.ts';
 import { mergeOperationAttachments, toPublicAttachment } from './document-attachments.ts';
 import {
 	AttachmentNotAvailableError,
@@ -3890,8 +3890,12 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			await this.recordRecoveredTurn(ctx);
 			return { action: 'run' as const };
 		}
-		await this.settleRecoveredInput(ledger, submission, verdict, ctx.interruptedTools, (records) =>
-			this.appendThroughRecovery(ctx, records),
+		await this.settleRecoveredInput(
+			ledger,
+			submission,
+			verdict,
+			ctx.interruptedTools,
+			(records, options) => this.appendThroughRecovery(ctx, records, options),
 		);
 		if (verdict.outcome === 'completed')
 			return { action: 'settle' as const, outcome: 'completed' as const };
@@ -3903,10 +3907,14 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	}
 
 	/** Write `records` in the harness `recover` hook: one host-record append of `ctx.session`. */
-	private async appendThroughRecovery(ctx: RecoverContext, records: readonly ConversationRecord[]) {
+	private async appendThroughRecovery(
+		ctx: RecoverContext,
+		records: readonly ConversationRecord[],
+		options: ConversationAppendOptions,
+	) {
 		const staged: HarnessLogRecord[] = [];
 		await this.conversationWriter.append(records, {
-			...this.canonicalAppendOptions(),
+			...options,
 			stage: (batch) => staged.push(...batch),
 		});
 		await ctx.session.append(staged);
@@ -3947,14 +3955,20 @@ export class Session implements FlueSession, AgentSubmissionSession {
 	 * ends as an aborted assistant, and each call of a cut tool batch gets
 	 * the interrupted marker (or the truncated outcome). The advisory signal
 	 * (`submission_interrupted` or `submission_aborted`) follows. These
-	 * records and the `submission_settled` records reach `write` in one call.
+	 * records reach `write` first, under the running attempt. The ledger then
+	 * reserves each settlement, and each `submission_settled` record reaches
+	 * `write` alone, under the attempt it names: the stream store takes a
+	 * settlement of a settling row only in a batch of its own.
 	 */
 	private async settleRecoveredInput(
 		ledger: SubmissionRecoveryLedger,
 		submission: AgentSubmission,
 		verdict: RecoveredSubmissionSettlement,
 		closed: RecoverContext['interruptedTools'],
-		write: (records: readonly ConversationRecord[]) => Promise<void>,
+		write: (
+			records: readonly ConversationRecord[],
+			options: ConversationAppendOptions,
+		) => Promise<void>,
 	) {
 		const records: ConversationRecord[] = [];
 		if (verdict.outcome !== 'completed') {
@@ -3977,7 +3991,20 @@ export class Session implements FlueSession, AgentSubmissionSession {
 			);
 			if (advisory) records.push(advisory);
 		}
-		await ledger.settle(submission, verdict, records, write);
+		// The records are idempotent: a recovery that runs again after a stop
+		// here finds the turn at rest and the advisory written.
+		if (records.length > 0) await write(records, this.canonicalAppendOptions());
+		await ledger.settle(submission, verdict, [], async (settlements) => {
+			for (const record of settlements) {
+				const { submissionId, attemptId } = record;
+				await write(
+					[record],
+					submissionId !== undefined && attemptId !== undefined
+						? { submission: { submissionId, attemptId } }
+						: this.canonicalAppendOptions(),
+				);
+			}
+		});
 	}
 
 	/**
@@ -3996,8 +4023,8 @@ export class Session implements FlueSession, AgentSubmissionSession {
 		if (submission?.status !== 'running') return false;
 		const verdict = await this.decideRecoveredInput(submission, false, []);
 		if (verdict.action === 'run') return false;
-		await this.settleRecoveredInput(ledger, submission, verdict, [], async (records) => {
-			await this.appendCanonical(records);
+		await this.settleRecoveredInput(ledger, submission, verdict, [], async (records, options) => {
+			await this.conversationWriter.append(records, options);
 		});
 		await this.rebuildCanonicalContext();
 		return true;

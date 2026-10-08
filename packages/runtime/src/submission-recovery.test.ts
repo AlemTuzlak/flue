@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentSubmissionStore } from './agent-execution-store.ts';
 import { createFlueContext } from './client.ts';
-import type { HarnessLogRecord } from './conversation-records.ts';
 import { ConversationRecordWriter } from './conversation-writer.ts';
 import { type AgentFunction, useModel, useTool } from './index.ts';
 import { sqlite } from './node/agent-execution-store.ts';
@@ -16,6 +15,7 @@ import {
 } from './runtime/agent-submissions.ts';
 import { InMemoryAttachmentStore } from './runtime/attachment-store.ts';
 import type { ConversationStreamStore } from './runtime/conversation-stream-store.ts';
+import { harnessLogRecordsOf } from './runtime/harness-log-store.ts';
 import { generateAttemptId, generateSubmissionId } from './runtime/ids.ts';
 import {
 	createHostRecordAppend,
@@ -173,13 +173,7 @@ async function crashOnHostA(options: {
 /** Every harness log record of the instance stream at `path`, in order. */
 async function harnessRecords(streams: ConversationStreamStore, path: string) {
 	const page = await streams.read(path);
-	const records: HarnessLogRecord[] = [];
-	for (const batch of page.batches) {
-		for (const record of batch.records) {
-			if (record.type === 'harness_log_batch') records.push(...record.records);
-		}
-	}
-	return records;
+	return page.batches.flatMap((batch) => harnessLogRecordsOf(batch.records));
 }
 
 /** The outcome of each `harness.input.settled` record of `inputId`. */
